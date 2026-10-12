@@ -24,8 +24,8 @@ func pendingManyClientCheckpoint(n int) []byte {
 	return EncodeStateAsUpdateV2(doc, nil)
 }
 
-// Report rejection separately from successful restore. All versions receive
-// identical fixtures and options; high-cap cases exercise deferred-item restore.
+// Report rejections separately so a fast rejection at a small pending cap is
+// not mistaken for a fast successful restore.
 func benchmarkPendingComplete(b *testing.B, update []byte, version, n, cap int) {
 	apply := ApplyUpdateV1
 	if version == 2 {

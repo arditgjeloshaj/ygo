@@ -549,10 +549,21 @@ func applyV1Txn(txn *Transaction, update []byte) (retErr error) {
 //	(e) collects items whose parent is unresolved-but-might-be-in-this-update
 //	    into the returned slice for the within-update retry pass.
 //
-// numClients is the count parsed from the header.
+// Groups that a later group for the same client supersedes are decoded and
+// dropped (yjs parity). numClients is the count parsed from the header.
 func decodeAndPark(txn *Transaction, dec *encoding.Decoder, sv StateVector, numClients uint64, update []byte) ([]*Item, error) {
 	var pending []*Item
 	budget := newPendingBudget(txn.doc, sv, update, false)
+	var superseded groupSet
+	if numClients > 1 {
+		// Fail before integrating anything: a later malformed group must not
+		// leave earlier, superseded groups applied.
+		var err error
+		if superseded, err = supersededGroups(update, nil, encoding.Decoder{}); err != nil {
+			return nil, err
+		}
+	}
+	budget.setSuperseded(superseded)
 
 	totalStructs := uint64(0)
 	for i := uint64(0); i < numClients; i++ {
@@ -575,11 +586,15 @@ func decodeAndPark(txn *Transaction, dec *encoding.Decoder, sv StateVector, numC
 		}
 
 		existingEnd := sv.Clock(client)
+		drop := superseded.has(i)
 
 		for j := uint64(0); j < numStructs; j++ {
 			item, err := decodeItem(dec, txn.doc, client, clock)
 			if err != nil {
 				return nil, err
+			}
+			if drop {
+				continue
 			}
 
 			// Skip structs (tag 10) mark clocks the sender withheld, so the

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.51.8] — 2026-10-09
+## [1.51.9] — 2026-10-12
 
 ### Fixed
 
@@ -24,19 +24,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Small and entirely blocked queues avoid indexing; remaining unresolved items
   retain the fixed-point fallback and persistent pending limit.
 
-## [1.51.7] — 2026-10-09
+## [1.51.8] — 2026-10-11
 
 ### Fixed
 
-- Resolve dependencies in complete V1/V2 checkpoints before applying the
-  cross-update pending limit. Preflight retains one blocked head and a decoder
-  cursor per wire group, preventing large per-struct metadata allocations on
-  incomplete updates. Unique-client groups with unfillable clock gaps or
-  dependencies outside both the update and store are counted without cursors.
-  V2 cursors share immutable column data; single-group updates reject oversized
-  blocked tails early. Rejected preflight updates add no deferred items to the
-  persistent pending queue, retain previously queued items, and do not roll back changes already integrated. The pending
-  limit, wire format and public API are unchanged.
+- **`crdt`: an update with several groups for one client applied the overlap
+  twice.** When a V1 or V2 update carried more than one wire group for the same
+  client, each group was trimmed only against the state from before the update,
+  so overlapping structs were integrated again: the store held duplicates, the
+  text showed repeated content and the state vector went backwards, with no
+  error. ygo now matches yjs, which keeps only the last group for each client
+  and drops earlier groups without integrating them. An update whose group
+  framing is malformed is rejected before any group is integrated, so a bad
+  later group can no longer leave the earlier ones applied. This is a behaviour
+  change for such updates: content found only in an earlier group for a client
+  is no longer applied. yjs and ygo never encode repeated groups, so their
+  updates are unaffected. The pending-limit preflight counts only the groups
+  that are integrated, so a dropped group can no longer cause a rejection.
+  `MergeUpdatesV1/V2`, `DiffUpdateV1/V2`,
+  `EncodeStateVectorFromUpdate(V2)` and the `ContentMap` constructors apply the
+  same rule, so merging or diffing such an update no longer changes what it
+  applies. (#305, #308)
+- **`crdt`: rejecting some crafted incomplete updates allocated far more than
+  their size.** The pending-limit preflight kept a full decoder copy for every
+  blocked wire group whose dependency was present in the update but could never
+  resolve, such as a dependency cycle or a client that reaches a clock only
+  through a gap or a skip. A 6–10 MiB update could allocate up to 470 MiB
+  before being rejected. Preflight now keeps a small record per blocked group
+  and its blocked structs as compact varints, and rules out dependencies a
+  client can never reach before keeping anything. Rejecting these updates now
+  allocates at most about 11 times their size, and in linear time. Updates that
+  can resolve are still accepted. (#306)
+
+## [1.51.7] — 2026-10-11
+
+### Fixed
+
+- **`crdt`: a complete checkpoint could be rejected by the pending limit.**
+  When a V1/V2 update's structs depended on other structs later in the same
+  update, they were parked as pending and counted against the cross-update
+  pending limit, so a large but complete document state (for example a
+  many-client checkpoint) failed to apply. Dependencies inside the update are
+  now resolved first, and only structs still missing after that count against
+  the limit. A rejected update adds nothing to the persistent pending queue,
+  but changes integrated before the rejection are not rolled back. Preflight
+  keeps one cursor per wire group rather than metadata for every blocked
+  struct, so incomplete updates stay cheap to reject. The pending limit, wire
+  format and public API are unchanged. Thanks to @kovaa-dev.
+
+## [1.51.6] — 2026-10-11
+
+### Performance
+
+- **`crdt`: replacing a map value no longer scans unrelated keys.** Direct
+  replacements after the previous rightmost value skip the shared-list scan.
+  Concurrent and non-adjacent replacements retain conflict resolution.
 
 ## [1.51.5] — 2026-10-09
 

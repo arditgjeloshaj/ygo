@@ -364,69 +364,69 @@ Complete-update timers exclude destination creation/destruction and result check
 `rejections/op` distinguishes rejection from successful restore. Compare identical
 fixtures and options on both revisions. Allocation volume is cumulative, not peak RAM.
 
-Local results: Apple M4 Pro, macOS arm64, Go 1.26.8; ten samples per revision,
-identical fixtures. Main is `8e7e969`, the preflight baseline is `bd642e5`.
-Baseline figures were measured earlier with the same fixtures and toolchain;
-after figures use the final PR implementation.
-Time/allocations are medians. Peak RSS is the maximum of three fresh processes
-with prepared wire bytes; fixture generation and compilation are excluded,
-runtime/input/document included. The two-struct fixture uses a string and an
-own-origin embed; main rejects it at cap=16, so its successful-restore baseline
-is the preflight implementation. All restores shown below succeed.
+Local results: Apple M4 Pro, macOS arm64, Go 1.26.8; ten serial alternating
+samples per revision with identical fixtures. Before is main `8ca1701`; after
+uses the PR resolver on the same base. Both accept every complete fixture below
+with cap=16. The overlap scenario calls the resolver directly.
 
-### V1 reverse chain, 20k clients (cap=16)
+Time/allocations are medians; allocation volume is cumulative. Peak RSS is the
+maximum of three fresh processes applying identical prepared wire bytes.
+Fixture generation and compilation are excluded; runtime/input/document included.
+Complete-update timers exclude document lifecycle and result checks.
 
-| Metric | Before (main) | After |
-|---|---:|---:|
-| Time, ms/op | 3,099.862 | 14.023 |
-| Allocated, MiB/op | 6,487.450 | 17.138 |
-| Allocations/op | 448,949.0 | 160,623.5 |
-| Peak RSS, MiB | 19.609 | 16.438 |
+Temporary scheduler storage adds about 0.40 MiB at 10k queued items,
+0.79 MiB at 20k and 1.89 MiB for 40k contiguous items. The four ordinary
+ApplyUpdate V1/V2 benchmarks show no significant time/allocation change.
 
-### V2 reverse chain, 20k clients (cap=16)
+### V1 reverse chain, 20k clients
 
 | Metric | Before (main) | After |
 |---|---:|---:|
-| Time, ms/op | 3,018.060 | 13.896 |
-| Allocated, MiB/op | 6,487.547 | 17.251 |
-| Allocations/op | 448,935.5 | 160,635.5 |
-| Peak RSS, MiB | 20.719 | 16.594 |
+| Time, ms/op | 4,200.673 | 13.812 |
+| Allocated, MiB/op | 12.519 | 13.312 |
+| Allocations/op | 100,566.5 | 100,570.0 |
+| Peak RSS, MiB | 14.906 | 16.469 |
 
-### V2 checkpoint, 10k clients (cap=16)
+### V2 reverse chain, 20k clients
 
 | Metric | Before (main) | After |
 |---|---:|---:|
-| Time, ms/op | 760.888 | 6.644 |
-| Allocated, MiB/op | 1,489.218 | 8.494 |
-| Allocations/op | 202,754.5 | 80,369.0 |
-| Peak RSS, MiB | 14.734 | 11.062 |
+| Time, ms/op | 4,209.086 | 14.640 |
+| Allocated, MiB/op | 12.631 | 13.424 |
+| Allocations/op | 100,579.5 | 100,582.0 |
+| Peak RSS, MiB | 14.828 | 15.938 |
 
-### V1 two structs/client, 20k clients (cap=16)
+### V2 checkpoint, 10k clients
 
-| Metric | Before (#260) | After |
+| Metric | Before (main) | After |
 |---|---:|---:|
-| Time, ms/op | 6,017.359 | 26.477 |
-| Allocated, MiB/op | 25.473 | 27.364 |
-| Allocations/op | 360,631.0 | 360,632.0 |
-| Peak RSS, MiB | 22.438 | 23.828 |
+| Time, ms/op | 984.154 | 7.154 |
+| Allocated, MiB/op | 6.185 | 6.585 |
+| Allocations/op | 50,345.0 | 50,348.0 |
+| Peak RSS, MiB | 10.172 | 10.641 |
 
-### V2 two structs/client, 20k clients (cap=16)
+### V1 two structs/client, 20k clients
 
-| Metric | Before (#260) | After |
+| Metric | Before (main) | After |
 |---|---:|---:|
-| Time, ms/op | 5,910.772 | 25.510 |
-| Allocated, MiB/op | 33.364 | 35.254 |
-| Allocations/op | 300,630.5 | 300,632.0 |
-| Peak RSS, MiB | 40.359 | 39.844 |
+| Time, ms/op | 6,075.010 | 26.030 |
+| Allocated, MiB/op | 20.218 | 22.109 |
+| Allocations/op | 280,571.0 | 280,575.0 |
+| Peak RSS, MiB | 20.828 | 23.141 |
+
+### V2 two structs/client, 20k clients
+
+| Metric | Before (main) | After |
+|---|---:|---:|
+| Time, ms/op | 5,873.531 | 23.694 |
+| Allocated, MiB/op | 17.129 | 19.019 |
+| Allocations/op | 200,581.0 | 200,585.0 |
+| Peak RSS, MiB | 20.859 | 20.312 |
 
 ### Overlapping ranges, 5k clients
 
-The producer index must find a long range even when a shorter overlapping copy
-has a later start. The same complete queue is compared before/after prefix
-coverage; both variants restore successfully. No extra index array is allocated.
-
-| Metric | Before coverage | After |
+| Metric | Before (main) | After |
 |---|---:|---:|
-| Time, ms/op | 258.723 | 1.578 |
-| Allocated, MiB/op | 2.010 | 2.010 |
-| Allocations/op | 10,138.0 | 10,138.0 |
+| Time, ms/op | 327.309 | 1.822 |
+| Allocated, MiB/op | 1.615 | 2.015 |
+| Allocations/op | 10,141.0 | 10,144.5 |

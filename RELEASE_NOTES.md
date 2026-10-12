@@ -1,4 +1,4 @@
-## v1.51.8
+## v1.51.9
 
 **Overlapping updates no longer duplicate content.** When out-of-order V1/V2
 updates partially overlap a pending text or array range, the retry now skips
@@ -18,18 +18,54 @@ queues use temporary memory proportional to their size; remaining unresolved
 items retain the fixed-point fallback and the configured persistent pending limit.
 The public API and update encodings remain compatible.
 
+## v1.51.8
+
+**Who is affected:** servers that apply updates from untrusted peers. Updates
+encoded by yjs or ygo are unaffected by the behaviour change below.
+
+**Repeated client groups now behave like yjs.** An update can carry more than
+one wire group for the same client, although no standard encoder produces
+one. ygo used to integrate every such group, and overlapping groups put
+duplicate structs in the document, showed repeated text and moved the state
+vector backwards, without an error. ygo now keeps only the last group for each
+client and drops the earlier ones, exactly as yjs does, so both reach the same
+document. Content that appears only in an earlier group for a client is no
+longer applied. `MergeUpdates`, `DiffUpdate` and `EncodeStateVectorFromUpdate`
+follow the same rule, so they agree with applying the update. (#305, #308)
+
+**Crafted incomplete updates are cheap to reject again.** Since v1.51.7 the
+pending-limit preflight kept a full decoder copy for each blocked wire group
+when the missing dependency was present in the update but could never resolve,
+for example in a dependency cycle. Such an update could allocate dozens of
+times its own size before being rejected. Preflight now keeps only a compact
+record per blocked group, so rejection costs at most about 11 times the
+update's size, and updates that can resolve are still accepted. (#306)
+
+**Upgrading.** No API change.
+
 ## v1.51.7
 
-Complete V1/V2 checkpoints resolve dependencies within the update before the
-cross-update pending limit is applied. Preflight retains the current blocked
-struct and a resumable decoder cursor per wire group, rather than metadata for
-every struct in a blocked tail. Unique-client groups with unfillable clock
-gaps or dependencies outside both the update and store are counted without
-cursors. V2 cursors share immutable columns and the string pool. Single-group
-updates stop once the number of permanently blocked structs exceeds the
-remaining budget. A rejected preflight update adds none of its deferred items to the persistent pending queue; previously queued items
-remain. Changes already integrated before rejection are not rolled back.
-The configured pending limit, wire format and public API are unchanged.
+**Who is affected:** servers that store or exchange large full-document updates,
+such as checkpoints from documents with many clients, where structs refer to
+other structs later in the same update.
+
+**Complete checkpoints no longer fail the pending limit.** ygo parked any
+struct whose dependency had not been integrated yet, and counted it against
+the limit on pending structs. A complete but large checkpoint could therefore
+be rejected, so the document could not be loaded from it. ygo now resolves
+dependencies inside the update first; only structs that are still missing
+afterwards count against the limit. If an update is rejected, none of its structs are added to
+the pending queue, but changes already applied before the rejection stay.
+Incomplete or crafted updates are still rejected quickly and with little
+memory. The pending limit, wire format and public API are unchanged. Thanks
+to @kovaa-dev.
+
+## v1.51.6
+
+**Replacing a map value no longer scans unrelated keys.** Direct replacements
+skip the shared-list scan when placed immediately after the key's previous
+rightmost value. Concurrent and non-adjacent replacements retain conflict
+resolution.
 
 ## v1.51.5
 

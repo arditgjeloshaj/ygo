@@ -314,6 +314,20 @@ func referencePendingBudgetCheck(b pendingBudget, count int) error {
 	for client, clock := range b.initial {
 		known[client] = clock
 	}
+	// Only the last wire group per client is integrated (yjs parity).
+	last := map[ClientID]uint64{}
+	{
+		s := newPendingScanner(b.update, b.v2)
+		clients := s.uint()
+		for i := uint64(0); i < clients && s.err == nil; i++ {
+			n := s.uint()
+			last[s.client()] = i
+			s.uint()
+			for j := uint64(0); j < n && s.err == nil; j++ {
+				s.item()
+			}
+		}
+	}
 	for first := true; ; first = false {
 		s := newPendingScanner(b.update, b.v2)
 		clients := s.uint()
@@ -333,6 +347,7 @@ func referencePendingBudgetCheck(b pendingBudget, count int) error {
 			if first {
 				existingEnd = b.initial.Clock(client)
 			}
+			dropped := last[client] != i
 			for j := uint64(0); j < n && s.err == nil; j++ {
 				length, skip, deps, numDeps := s.item()
 				end := clock + length
@@ -341,7 +356,7 @@ func referencePendingBudgetCheck(b pendingBudget, count int) error {
 				}
 				// A skip denotes clocks absent from this message. It advances
 				// the wire cursor only and cannot satisfy a dependency.
-				if !skip && end > existingEnd {
+				if !dropped && !skip && end > existingEnd {
 					ready := clock <= existingEnd
 					for _, dep := range deps[:numDeps] {
 						if dep.Clock >= known.Clock(dep.Client) {

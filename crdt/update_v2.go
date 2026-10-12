@@ -613,6 +613,15 @@ func applyV2Txn(txn *Transaction, update []byte) (retErr error) {
 	}
 
 	var pending []*Item
+	var superseded groupSet
+	if numClients > 1 {
+		// Fail before integrating anything: a later malformed group must not
+		// leave earlier, superseded groups applied.
+		if superseded, err = supersededGroups(update, &initialV2, budget.v2Rest); err != nil {
+			return wrapUpdateErr(err)
+		}
+	}
+	budget.setSuperseded(superseded)
 
 	totalStructs := uint64(0)
 	for i := uint64(0); i < numClients; i++ {
@@ -634,6 +643,7 @@ func applyV2Txn(txn *Transaction, update []byte) (retErr error) {
 		}
 
 		existingEnd := sv.Clock(client)
+		drop := superseded.has(i)
 
 		for j := uint64(0); j < numStructs; j++ {
 			info, err := dec.readInfo()
@@ -651,6 +661,9 @@ func applyV2Txn(txn *Transaction, update []byte) (retErr error) {
 				l, err := dec.readLen()
 				if err != nil {
 					return wrapUpdateErr(err)
+				}
+				if drop {
+					continue
 				}
 				length := uint64(l)
 				itemEnd := clock + length
@@ -703,6 +716,9 @@ func applyV2Txn(txn *Transaction, update []byte) (retErr error) {
 				item, contentLen, derr = decodeItemV2(dec, txn.doc, client, clock, info)
 				if derr != nil {
 					return wrapUpdateErr(derr)
+				}
+				if drop {
+					continue
 				}
 			}
 

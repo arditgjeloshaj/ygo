@@ -88,50 +88,44 @@ func TestUnit_PendingBudget_BoundsDiverseBytes(t *testing.T) {
 	}
 }
 
-func TestUnit_PendingScanner_CheckpointIsIndependent(t *testing.T) {
-	source := New()
-	defer source.Destroy()
-	key := "key"
-	parent := ID{Client: 99}
-	contents := []Content{NewContentFormat("bold", true), NewContentFormat("bold", false), NewContentString("А🐷z"), NewContentJSON(nil, "tail", 7), NewContentAny([]any{true, "x"})}
-	items := make([]*Item, len(contents))
-	clock := uint64(0)
-	for i, content := range contents {
-		items[i] = &Item{ID: ID{Client: 1, Clock: clock}, parentID: &parent, ParentSub: &key, Content: content}
-		clock += uint64(content.Len())
+// The sizing pass must predict the filled summary exactly, and every entry
+// must decode back to the struct the scan saw.
+func TestUnit_PendingSummary_RoundTrip(t *testing.T) {
+	type entry struct {
+		skip   bool
+		length uint64
+		deps   []ID
 	}
-	for _, version := range []int{1, 2} {
-		encode := encodeStructStoreV1
-		if version == 2 {
-			encode = encodeStructStoreV2
-		}
-		data := encode(map[ClientID][]*Item{1: items}, newDeleteSet(), nil, source.store)
-		s := newPendingScanner(data, version == 2)
-		require.EqualValues(t, 1, s.uint())
-		require.EqualValues(t, len(items), s.uint())
-		s.client()
-		s.uint()
-		s.item()
-		copy := s.checkpoint()
-		// Consume the original first, including active RLE runs. Its advance must
-		// not consume the copy's rest, columns, string position or key clocks.
-		for range contents[1:] {
-			s.item()
-		}
-		require.Zero(t, s.uint())
-		require.NoError(t, s.err)
-		for _, content := range contents[1:] {
-			length, _, _, _ := copy.scanner.item()
-			require.EqualValues(t, content.Len(), length)
-			require.NoError(t, copy.scanner.err)
-		}
-		require.Zero(t, copy.scanner.uint())
-		require.NoError(t, copy.scanner.err)
+	top := ^uint64(0)
+	entries := []entry{
+		{false, 1, []ID{{Client: 1, Clock: 0}}},
+		{true, 1 << 40, nil},
+		{false, 0, nil},
+		{false, top >> 1, []ID{{Client: ClientID(top), Clock: top}, {Client: 127, Clock: 128}, {Client: 0, Clock: 1 << 35}}},
+		{false, 3, []ID{{Client: 9, Clock: 2}, {Client: 300, Clock: 0}}},
 	}
+	sizing, fill := pendingCollector{}, pendingCollector{fill: true}
+	for _, e := range entries {
+		sizing.put(e.skip, e.length, e.deps)
+		fill.put(e.skip, e.length, e.deps)
+	}
+	require.Len(t, fill.sum, sizing.size)
+	at := uint32(0)
+	for _, e := range entries {
+		skip, length, deps, n, next := pendingEntry(fill.sum, at)
+		require.Equal(t, e.skip, skip)
+		require.Equal(t, e.length, length)
+		require.Equal(t, len(e.deps), n)
+		for i := range e.deps {
+			require.Equal(t, e.deps[i], deps[i])
+		}
+		at = next
+	}
+	require.EqualValues(t, len(fill.sum), at)
 }
 
-// A later overlapping group can cover a blocked head independently of its
-// missing external dependency. Waking coverage must cancel the other watch.
+// A later group for client 1 supersedes its blocked 100-struct group, so only
+// client 3's missing parent stays pending.
 func pendingOverlappingGroups(version int) []byte {
 	source := New()
 	defer source.Destroy()

@@ -1,119 +1,214 @@
 package crdt
 
-import "container/heap"
+import (
+	"encoding/binary"
+	"slices"
+)
 
-// Each blocked group watches one missing dependency and its own coverage.
-// Replacing a head removes both old watches; stale waiters cannot accumulate
-// while overlapping groups cover successive structs of a long blocked tail.
-type pendingWatch struct {
-	clock        uint64
-	group, index int
-	owner        *pendingWatchHeap
-}
-
-type pendingWatchHeap struct {
-	client ClientID
-	items  []*pendingWatch
-}
-
-func (h *pendingWatchHeap) Len() int           { return len(h.items) }
-func (h *pendingWatchHeap) Less(i, j int) bool { return h.items[i].clock < h.items[j].clock }
-func (h *pendingWatchHeap) Swap(i, j int) {
-	h.items[i], h.items[j] = h.items[j], h.items[i]
-	h.items[i].index = i
-	h.items[j].index = j
-}
-func (h *pendingWatchHeap) Push(value any) {
-	w := value.(*pendingWatch)
-	w.owner = h
-	w.index = len(h.items)
-	h.items = append(h.items, w)
-}
-func (h *pendingWatchHeap) Pop() any {
-	last := len(h.items) - 1
-	w := h.items[last]
-	h.items[last] = nil
-	h.items = h.items[:last]
-	w.owner = nil
-	return w
+// pendingCollector retains a record per blocked group and the group's
+// unresolved structs as a varint summary, so a blocked group costs about its
+// wire size rather than a decoder copy. A sizing pass (fill false) only
+// counts, letting the filling pass allocate exact capacities.
+type pendingCollector struct {
+	groups      []pendingGroup
+	sum         []byte
+	heads, size int
+	fill        bool
 }
 
-type pendingGroupWorklist struct {
-	groups       []pendingGroup
-	waits        []pendingWatch
-	byClient     map[ClientID]*pendingWatchHeap
-	queue        []int
-	front, count int
-}
-
-func (w *pendingGroupWorklist) cancel(index int) {
-	wait := &w.waits[index]
-	if owner := wait.owner; owner != nil {
-		heap.Remove(owner, wait.index)
-		if owner.Len() == 0 {
-			delete(w.byClient, owner.client)
-		}
+func (c *pendingCollector) head(client ClientID, clock, end, remaining uint64) {
+	c.heads++
+	if c.fill {
+		c.groups = append(c.groups, pendingGroup{client: client, clock: clock, end: end, at: uint32(len(c.sum)), remaining: uint32(remaining)})
 	}
 }
 
-func (w *pendingGroupWorklist) enqueue(group int) {
-	w.cancel(2 * group)
-	w.cancel(2*group + 1)
-	g := &w.groups[group]
-	if g.done || g.queued {
+// A summary entry is a flag byte (skip bit, dependency count), the struct
+// length, then each dependency's client and clock.
+func (c *pendingCollector) put(skip bool, length uint64, deps []ID) {
+	flag := byte(len(deps)) << 1
+	if skip {
+		flag = 1
+		deps = nil
+	}
+	if !c.fill {
+		c.size += 1 + uvarintLen(length)
+		for _, dep := range deps {
+			c.size += uvarintLen(uint64(dep.Client)) + uvarintLen(dep.Clock)
+		}
 		return
 	}
-	g.queued = true
-	w.queue[(w.front+w.count)%len(w.queue)] = group
-	w.count++
-}
-
-func (w *pendingGroupWorklist) watch(index int, client ClientID, clock uint64, group int) {
-	h := w.byClient[client]
-	if h == nil {
-		h = &pendingWatchHeap{client: client}
-		w.byClient[client] = h
+	c.sum = append(c.sum, flag)
+	c.sum = binary.AppendUvarint(c.sum, length)
+	for _, dep := range deps {
+		c.sum = binary.AppendUvarint(c.sum, uint64(dep.Client))
+		c.sum = binary.AppendUvarint(c.sum, dep.Clock)
 	}
-	wait := &w.waits[index]
-	wait.clock, wait.group = clock, group
-	heap.Push(h, wait)
 }
 
-func (w *pendingGroupWorklist) advance(client ClientID, clock uint64) {
-	for {
-		h := w.byClient[client]
-		if h == nil || h.Len() == 0 || h.items[0].clock > clock {
+func uvarintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
+}
+
+func pendingEntry(sum []byte, at uint32) (skip bool, length uint64, deps [3]ID, numDeps int, next uint32) {
+	p := int(at)
+	flag := sum[p]
+	p++
+	length, n := binary.Uvarint(sum[p:])
+	p += n
+	numDeps = int(flag >> 1)
+	for i := 0; i < numDeps; i++ {
+		client, n := binary.Uvarint(sum[p:])
+		p += n
+		clock, n := binary.Uvarint(sum[p:])
+		p += n
+		deps[i] = ID{Client: ClientID(client), Clock: clock}
+	}
+	return flag&1 != 0, length, deps, numDeps, uint32(p)
+}
+
+// A group holds its current blocked struct. Surviving groups are unique per
+// client, so only a group's own progress advances its client and each blocked
+// group waits on at most one other group, in that group's pairing heap.
+type pendingGroup struct {
+	client                   ClientID
+	clock, end               uint64
+	wake                     uint64 // the awaited clock on the target's client
+	at, remaining            uint32
+	child, sibling, watchers int32
+	done                     bool
+}
+
+func (g *pendingGroup) next(sum []byte) {
+	for g.remaining > 0 {
+		_, _, _, _, next := pendingEntry(sum, g.at)
+		g.at = next
+		skip, length, _, _, _ := pendingEntry(sum, g.at)
+		g.clock, g.end = g.end, g.end+length
+		g.remaining--
+		if !skip {
 			return
 		}
-		w.enqueue(h.items[0].group)
 	}
+	g.done = true
 }
 
-func resolvePendingGroups(groups []pendingGroup, known StateVector) error {
-	w := pendingGroupWorklist{groups: groups, waits: make([]pendingWatch, 2*len(groups)), byClient: make(map[ClientID]*pendingWatchHeap, len(groups)), queue: make([]int, len(groups))}
-	for i := range groups {
-		w.enqueue(i)
+func (g *pendingGroup) missing(sum []byte, known StateVector) (ID, bool) {
+	_, _, deps, numDeps, _ := pendingEntry(sum, g.at)
+	for _, dep := range deps[:numDeps] {
+		if dep.Clock >= known.Clock(dep.Client) {
+			return dep, true
+		}
 	}
-	for w.count > 0 {
-		index := w.queue[w.front]
-		w.front = (w.front + 1) % len(w.queue)
-		w.count--
+	return ID{}, false
+}
+
+func pendingMeld(groups []pendingGroup, a, b int32) int32 {
+	if a < 0 {
+		return b
+	}
+	if b < 0 {
+		return a
+	}
+	if groups[b].wake < groups[a].wake {
+		a, b = b, a
+	}
+	groups[b].sibling = groups[a].child
+	groups[a].child = b
+	return a
+}
+
+// pendingPop removes root and returns the merged heap of its children.
+func pendingPop(groups []pendingGroup, root int32) int32 {
+	pairs := int32(-1)
+	for c := groups[root].child; c >= 0; {
+		a, b := c, groups[c].sibling
+		c = -1
+		if b >= 0 {
+			c = groups[b].sibling
+			groups[b].sibling = -1
+		}
+		groups[a].sibling = -1
+		p := pendingMeld(groups, a, b)
+		groups[p].sibling = pairs
+		pairs = p
+	}
+	groups[root].child = -1
+	merged := int32(-1)
+	for pairs >= 0 {
+		next := groups[pairs].sibling
+		groups[pairs].sibling = -1
+		merged = pendingMeld(groups, merged, pairs)
+		pairs = next
+	}
+	return merged
+}
+
+// resolvePendingGroups advances groups to the update's fixed point. Queued
+// groups are linked through sibling, which is free while outside a heap.
+func resolvePendingGroups(groups []pendingGroup, sum []byte, known StateVector) {
+	slices.SortFunc(groups, func(a, b pendingGroup) int {
+		if a.client < b.client {
+			return -1
+		}
+		if a.client > b.client {
+			return 1
+		}
+		return 0
+	})
+	find := func(client ClientID) int32 {
+		i, ok := slices.BinarySearchFunc(groups, client, func(g pendingGroup, c ClientID) int {
+			if g.client < c {
+				return -1
+			}
+			if g.client > c {
+				return 1
+			}
+			return 0
+		})
+		if !ok {
+			return -1
+		}
+		return int32(i)
+	}
+	top := int32(-1)
+	for i := range groups {
+		groups[i].child, groups[i].watchers = -1, -1
+		groups[i].sibling = top
+		top = int32(i)
+	}
+	for top >= 0 {
+		index := top
 		g := &groups[index]
-		g.queued = false
+		top, g.sibling = g.sibling, -1
+		start := known.Clock(g.client)
 		for !g.done {
 			if g.end > known.Clock(g.client) {
-				if client, clock, missing := g.missing(known); missing {
-					w.watch(2*index, client, clock, index)
-					w.watch(2*index+1, g.client, g.end, index)
+				if g.clock > known.Clock(g.client) {
+					break // Only this group could fill its own clock gap.
+				}
+				if dep, missing := g.missing(sum, known); missing {
+					if target := find(dep.Client); target >= 0 && target != index {
+						g.wake = dep.Clock
+						groups[target].watchers = pendingMeld(groups, groups[target].watchers, index)
+					}
 					break
 				}
 				known[g.client] = g.end
-				w.advance(g.client, g.end)
 			}
-			if err := g.next(); err != nil {
-				return err
-			}
+			g.next(sum)
+		}
+		// Watchers wait for clocks beyond the frontier, so only progress wakes them.
+		frontier := known.Clock(g.client)
+		for w := g.watchers; frontier > start && w >= 0 && groups[w].wake < frontier; w = g.watchers {
+			g.watchers = pendingPop(groups, w)
+			groups[w].sibling = top
+			top = w
 		}
 	}
-	return nil
 }

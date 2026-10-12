@@ -48,9 +48,9 @@ func (d *Decoder) HasContent() bool { return d.pos < len(d.buf) }
 
 // RemainingBytes returns the unread portion of the buffer as a sub-slice.
 //
-// The returned slice ALIASES the decoder's underlying buffer; mutating it
-// (or extending its length via append beyond cap) corrupts the decoder.
-// Callers must treat it as read-only and copy if they need a slice with
+// The returned slice ALIASES the decoder's underlying buffer; writing to its
+// elements changes the bytes the decoder has yet to read. Callers must treat
+// it as read-only and copy if they need a slice with
 // an independent lifetime. Most callers in this codebase hand the bytes
 // straight to ApplySyncMessage or json.Unmarshal, both of which read-only,
 // so the zero-copy path is safe.
