@@ -1,4 +1,4 @@
-## v1.51.9
+## v1.51.10
 
 **Overlapping updates no longer duplicate content.** When out-of-order V1/V2
 updates partially overlap a pending text or array range, the retry now skips
@@ -17,6 +17,14 @@ Small queues and queues making no progress avoid the dependency index. Complex
 queues use temporary memory proportional to their size; remaining unresolved
 items retain the fixed-point fallback and the configured persistent pending limit.
 The public API and update encodings remain compatible.
+
+## v1.51.9
+
+**Map updates avoid unrelated-key conflict scans.** New keys and replacements
+immediately after their current winner bypass the scan; concurrent writes
+resolve against the same key. XML attributes and child elements use separate
+conflict orders, preserving child order regardless of update delivery order.
+The public API and wire format are unchanged.
 
 ## v1.51.8
 

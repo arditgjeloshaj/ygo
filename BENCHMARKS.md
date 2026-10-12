@@ -366,7 +366,7 @@ fixtures and options on both revisions. Allocation volume is cumulative, not pea
 
 Local results: Apple M4 Pro, macOS arm64, Go 1.26.8; ten serial alternating
 samples per revision with identical fixtures. Before is main `8ca1701`; after
-uses the PR resolver on the same base. Both accept every complete fixture below
+is the resolver at `404ae02` on the same base. Both accept every complete fixture below
 with cap=16. The overlap scenario calls the resolver directly.
 
 Time/allocations are medians; allocation volume is cumulative. Peak RSS is the
