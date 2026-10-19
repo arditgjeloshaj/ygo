@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.51.10] — 2026-10-12
+## [Unreleased]
 
 ### Fixed
 
@@ -23,6 +23,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuses the range index so shorter overlapping copies cannot hide a producer.
   Small and entirely blocked queues avoid indexing; remaining unresolved items
   retain the fixed-point fallback and persistent pending limit.
+
+## [1.51.11] — 2026-10-14
+
+### Fixed
+
+- **`crdt`: a write into a nested type that a concurrent peer deleted no
+  longer stays live.** Yjs drops it: `Item.integrate` deletes an item whose
+  parent is deleted, and an item whose parent was collected becomes a GC
+  struct. ygo kept it live, so `InsertSetFromDoc` and the delete set differed
+  from Yjs while `ToJSON`/`ToXML` matched. A nested type inserted into a
+  collected container also let its own children integrate live. Such items
+  are now deleted, and an orphan is stored as a GC struct with no content or
+  origins, so it is no longer re-encoded with its content and its children are
+  orphaned too. Yjs fixtures in `crdt/testdata/stranded_yjs_fixtures.json`
+  pin the live and deleted sets for V1 and V2.
+
+## [1.51.10] — 2026-10-14
+
+### Fixed
+
+- **`crdt`: a small crafted V2 update could pin a CPU core.** Since v1.51.8,
+  `ApplyUpdateV2` scans group headers before decoding an update with more than
+  one client group. For a JSON item, that scan stepped over each declared value
+  without reading any bytes, so a length the update could never supply cost up
+  to about a million iterations per item. An update of a few dozen bytes could
+  spin for seconds, and a crafted one far longer, before being rejected. The
+  scan now skips V2 JSON content in constant time. V1 updates and valid V2
+  updates are unaffected.
+- **`persistence`: the bundled stores keep large incremental updates instead
+  of refusing them, and every edit after them.** `MemoryPersistence`,
+  `FilePersistence` and `sqlite.Store` check an update in `AppendUpdate` by
+  decoding it alone into a scratch document, which took the crdt default
+  pending cap of 100,000. Decoded without the room's stored state, an update
+  parks every struct that depends on that state, and when its client already
+  has edits stored, that is every struct in it. So an update the room had
+  applied was refused with `crdt: invalid update` whenever more than 100,000
+  of its structs depended on stored state: any update of more than 100,000
+  structs from a client with stored edits, or a batch of smaller updates the
+  server coalesced past that count. With the server's default write
+  coalescing, the refused batch stayed queued and every later edit in the room
+  was merged into it and refused with it, so the room stayed in memory after
+  its last peer left, and every edit since the first refused write was lost
+  when it closed. The scratch document now has no pending cap: it is discarded
+  after the one decode, and the decoder's per-update item limit already bounds
+  what it can park. Updates that do not decode are still refused. The three
+  stores share the check (`internal/updatecheck`), and the `AppendUpdate`
+  godoc says how a custom adapter should build its scratch document.
+- **`provider/websocket`: `BroadcastUpdate` and the cluster relay no longer
+  refuse large incremental updates.** `BroadcastUpdate` checked an update the
+  same way, so it returned `ErrInvalidUpdate` for an update of more than
+  100,000 dependent structs that the room had already applied. A clustered
+  node runs that check after `Server.Inject` applies a relayed update to its
+  room, so such an update reached the room and never the node's own peers.
+  `BroadcastUpdate` now uses the stores' check; each room's document still
+  enforces `MaxPendingItems` when it applies an update.
+- **`crdt`: the comment on the default pending cap no longer says it matches
+  the decoder's per-update limit.** It is 100,000; the per-update limit is
+  2^20.
 
 ## [1.51.9] — 2026-10-12
 

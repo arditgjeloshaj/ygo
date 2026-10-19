@@ -1,4 +1,4 @@
-## v1.51.10
+## Unreleased
 
 **Overlapping updates no longer duplicate content.** When out-of-order V1/V2
 updates partially overlap a pending text or array range, the retry now skips
@@ -17,6 +17,63 @@ Small queues and queues making no progress avoid the dependency index. Complex
 queues use temporary memory proportional to their size; remaining unresolved
 items retain the fixed-point fallback and the configured persistent pending limit.
 The public API and update encodings remain compatible.
+
+## v1.51.11
+
+**Who is affected:** anyone reading ygo's record of live and deleted items
+(`InsertSetFromDoc`, the delete set) after concurrent edits. `ToJSON` and
+`ToXML` already matched Yjs.
+
+**What changed.** When one peer deletes a nested type while another is still
+writing into it, Yjs discards the late write. ygo kept it as a live item that
+nothing could reach. It now discards it too, in V1 and V2, whether or not the
+deleted container has been garbage collected. With garbage collection on (the
+default), the discarded content is also no longer included when the document
+is encoded.
+
+**Do I need to do anything?** No. Documents saved by earlier versions load as
+before.
+
+## v1.51.10
+
+**Crafted V2 updates can no longer pin a CPU core.** This affects servers
+on v1.51.8 or v1.51.9 that apply V2 updates from untrusted peers. v1.51.8 added
+a scan of an update's group headers before decoding. For JSON content in a V2
+update, the scan did work proportional to the item's declared length, up to
+about a million steps per item, without reading any input. An update of a few
+dozen bytes could keep a core busy for seconds, and a crafted one for much
+longer, before being rejected. The scan now skips that content in constant
+time.
+
+**Who is affected: anyone who stores rooms with `persistence.MemoryPersistence`,
+`persistence.FilePersistence` or `persistence/sqlite` (for example through
+`NewServerWithPersistence(persistence.NewLegacyAdapter(...))`), and anyone who
+calls `Server.BroadcastUpdate` or runs a cluster relay.** Custom persistence
+adapters are not changed.
+
+**Large edits are stored, and so is everything after them.** These
+stores check each update before writing it by decoding it on its own, and that
+check held at most 100,000 structs waiting for state it did not have. Decoded
+on its own, an update from a client whose earlier edits are already stored is
+missing everything it builds on, so all of its structs wait. Any such update
+of more than 100,000 structs, or a batch of smaller ones the server coalesced
+past that count, was refused with `crdt: invalid update` although the room had
+applied it. With the default write coalescing, the refused batch stayed queued
+and each later edit joined it, so nothing more in that room was stored: the
+room stayed in memory after its last peer left, and every edit since the
+refused one was lost when it closed. The check now has no such limit. Updates
+that do not decode are still refused.
+
+**Large relayed updates reach every peer.** `BroadcastUpdate` ran the same
+check, so it refused such an update with `ErrInvalidUpdate` after the room had
+applied it, and a clustered node that received one from another node applied
+it to its room but never sent it to its own peers. It now uses the stores'
+check. `MaxPendingItems` still caps each room's document.
+
+**Custom adapters.** A `VersionedPersistence` that checks updates by applying
+them to a bare `crdt.New()` refuses the same updates; the `AppendUpdate` godoc
+shows how to build the scratch document instead. No API or wire format
+changes.
 
 ## v1.51.9
 

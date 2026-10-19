@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -184,5 +185,40 @@ func TestUnit_SupersededGroups_StateVectorFromUpdate(t *testing.T) {
 		sv, err := DecodeStateVectorV1(raw)
 		require.NoError(t, err)
 		require.Equal(t, StateVector{9: 1}, sv, "V%d", version)
+	}
+}
+
+// V2 JSON values live in the string column, which the group scan never reads,
+// so a declared JSON length must not cost scan work. Repeated groups force the
+// scan; each item claims maxV2Items values the string column cannot supply.
+func TestUnit_SupersededGroups_V2JSONLengthCostsNoScanWork(t *testing.T) {
+	const items = 1 << 12
+	e2 := newV2Encoder()
+	e2.restEnc.WriteVarUint(2)
+	for _, n := range []int{items, 1} {
+		e2.restEnc.WriteVarUint(uint64(n))
+		e2.writeClient(1)
+		e2.restEnc.WriteVarUint(0)
+		for i := 0; i < n; i++ {
+			e2.writeInfo(wireJSON)
+			e2.writeParentInfo(true)
+			e2.writeString("t")
+			e2.writeLen(int(maxV2Items))
+		}
+	}
+	encodeDeleteSetV2(e2, newDeleteSet())
+	update := e2.toBytes()
+
+	done := make(chan error, 1)
+	go func() {
+		doc := New()
+		defer doc.Destroy()
+		done <- ApplyUpdateV2(doc, update, nil)
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, ErrInvalidUpdate)
+	case <-time.After(10 * time.Second):
+		t.Fatal("group scan spun on declared V2 JSON lengths")
 	}
 }

@@ -753,6 +753,10 @@ func (s *pendingScanner) content(tag byte) uint64 {
 			s.err = ErrInvalidUpdate
 			return 0
 		}
+		if tag == wireJSON && s.v2 != nil && s.frame {
+			// V2 JSON values live in the string column, which framing never reads.
+			return n
+		}
 		if tag == wireJSON && s.v2 == nil {
 			// Match decodeContent's whole-item JSON-first legacy fallback,
 			// without constructing the values or their nested object trees.
