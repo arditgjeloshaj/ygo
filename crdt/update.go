@@ -725,6 +725,9 @@ func resolveWithinUpdatePending(txn *Transaction, pending []*Item) error {
 	if len(pending) >= pendingScheduleThreshold {
 		pending = resolvePendingDependencies(txn, pending)
 	}
+	if len(pending) >= pendingScheduleThreshold {
+		pending = resolvePendingWaiters(txn, pending)
+	}
 	for len(pending) > 0 {
 		remaining := retryWithinUpdatePending(txn, pending)
 		if len(remaining) == len(pending) {
@@ -763,41 +766,24 @@ func drainPending(txn *Transaction) {
 		items := txn.doc.store.pending.items
 		txn.doc.store.pending = nil
 
-		var stillPending []*Item
-		stillMissing := make(StateVector)
-		progressed := false
-
 		// Process items with panic-safety: if tryIntegrate panics, re-park
-		// unprocessed items and stillPending back into store.pending so a
-		// subsequent ApplyUpdate can retry them. The outer applyV1Txn recover
-		// (v1.1.1) then converts the panic to an error for the caller.
-		idx := 0
+		// every item not yet integrated so a subsequent ApplyUpdate can retry
+		// them. The outer applyV1Txn recover (v1.1.1) then converts the panic
+		// to an error for the caller.
+		done := make([]bool, len(items))
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					// Restore: anything already re-parked + the unprocessed tail.
-					restore := append(stillPending, items[idx:]...)
-					if len(restore) > 0 {
-						txn.doc.store.pending = &pendingUpdate{items: restore, missing: stillMissing}
+					if restore, missing := unresolvedPending(txn.doc.store, items, done); len(restore) > 0 {
+						txn.doc.store.pending = &pendingUpdate{items: restore, missing: missing}
 					}
 					panic(r) // re-raise for outer recover
 				}
 			}()
-			for idx = 0; idx < len(items); idx++ {
-				item := items[idx]
-				if tryIntegrate(txn, item) {
-					progressed = true
-				} else {
-					stillPending = append(stillPending, item)
-					if client, parkedAt, isFuture := itemFutureDep(item, txn.doc.store); isFuture {
-						mergePendingMissing(stillMissing, client, parkedAt)
-					} else if item.ID.Clock > txn.doc.store.NextClock(item.ID.Client) {
-						// Same-client gap still blocks it.
-						mergePendingMissing(stillMissing, item.ID.Client, txn.doc.store.NextClock(item.ID.Client))
-					}
-				}
-			}
+			integratePending(txn, items, done)
 		}()
+		stillPending, stillMissing := unresolvedPending(txn.doc.store, items, done)
+		progressed := len(stillPending) < len(items)
 
 		if len(stillPending) > 0 {
 			txn.doc.store.pending = &pendingUpdate{items: stillPending, missing: stillMissing}
@@ -812,6 +798,26 @@ func drainPending(txn *Transaction) {
 			break
 		}
 	}
+}
+
+// unresolvedPending returns the items not marked done, in queue order, with
+// the clocks that must advance before retrying them.
+func unresolvedPending(store *StructStore, items []*Item, done []bool) ([]*Item, StateVector) {
+	var remaining []*Item
+	missing := make(StateVector)
+	for i, item := range items {
+		if done[i] {
+			continue
+		}
+		remaining = append(remaining, item)
+		if client, parkedAt, isFuture := itemFutureDep(item, store); isFuture {
+			mergePendingMissing(missing, client, parkedAt)
+		} else if item.ID.Clock > store.NextClock(item.ID.Client) {
+			// Same-client gap still blocks it.
+			mergePendingMissing(missing, item.ID.Client, store.NextClock(item.ID.Client))
+		}
+	}
+	return remaining, missing
 }
 
 func decodeItem(dec *encoding.Decoder, doc *Doc, client ClientID, clock uint64) (*Item, error) {

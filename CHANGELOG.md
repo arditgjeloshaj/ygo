@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuses the range index so shorter overlapping copies cannot hide a producer.
   Small and entirely blocked queues avoid indexing; remaining unresolved items
   retain the fixed-point fallback and persistent pending limit.
+- **`crdt`: loading, merging and out-of-order applying a text that several
+  peers typed into in turn no longer take seconds** (#311). For five peers
+  taking 20,000 turns (about 149,000 characters), loading the full state went
+  from ~200 ms to ~8 ms, `MergeUpdatesV1` of that state plus 500 updates from
+  ~1.8 s to ~4 ms, and applying the 20,000 updates newest first from ~3.1 s
+  (6.8 GB allocated) to ~12 ms. Each path retried every blocked struct until
+  nothing changed, and with clients interleaved each retry made little
+  progress:
+  - a blocked struct now waits on the one clock it is missing and is retried
+    when that client's clock passes it, both for a single update's queue after
+    the dependency walk above and when parked updates are drained;
+  - `MergeUpdatesV1`/`V2`, `DiffUpdateV1`/`V2`,
+    `EncodeStateVectorFromUpdate`/`V2` and `UpdateV1ToV2`/`UpdateV2ToV1`
+    follow each origin chain once when inferring parents, instead of
+    re-scanning every struct until no parent changes.
+
+  Results are unchanged and match Yjs for randomized multi-peer histories
+  delivered in order, reversed, shuffled, as full state and merged. Reported
+  with a proposed approach by @melodysdreamj.
 
 ## [1.51.11] — 2026-10-14
 

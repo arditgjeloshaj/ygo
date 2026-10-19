@@ -245,28 +245,63 @@ func buildMergeStore(updates [][]byte, decode func(*Doc, []byte) (map[ClientID][
 // references prior state) keep a nil Parent and their origin on the wire, so
 // the receiver infers the parent once it has the dependency.
 func resolveParents(store *StructStore) {
-	for changed := true; changed; {
-		changed = false
-		for _, items := range store.clients {
-			for _, it := range items {
-				if it.Parent != nil {
+	// Follow each origin chain once. Structs on a chain that reaches no parent
+	// are marked so later walks stop there; a chain longer than the store loops.
+	total := 0
+	for _, items := range store.clients {
+		total += len(items)
+	}
+	var unresolved map[*Item]bool
+	var chain []*Item
+	for _, items := range store.clients {
+		for _, it := range items {
+			if it.Parent != nil {
+				continue
+			}
+			ref := parentRef(store, it)
+			if ref != nil && ref.Parent != nil {
+				inheritParent(it, ref)
+				continue
+			}
+			chain = append(chain[:0], it)
+			for ref != nil && ref.Parent == nil {
+				if unresolved[ref] || len(chain) > total {
+					ref = nil
+					break
+				}
+				chain = append(chain, ref)
+				ref = parentRef(store, ref)
+			}
+			for i := len(chain) - 1; i >= 0; i-- {
+				if ref == nil {
+					if unresolved == nil {
+						unresolved = make(map[*Item]bool)
+					}
+					unresolved[chain[i]] = true
 					continue
 				}
-				var ref *Item
-				if it.Origin != nil {
-					ref = store.Find(*it.Origin)
-				} else if it.OriginRight != nil {
-					ref = store.Find(*it.OriginRight)
-				}
-				if ref != nil && ref.Parent != nil {
-					it.Parent = ref.Parent
-					if it.ParentSub == nil {
-						it.ParentSub = ref.ParentSub
-					}
-					changed = true
-				}
+				inheritParent(chain[i], ref)
+				ref = chain[i]
 			}
 		}
+	}
+}
+
+// parentRef returns the struct whose parent it would inherit.
+func parentRef(store *StructStore, it *Item) *Item {
+	switch {
+	case it.Origin != nil:
+		return store.Find(*it.Origin)
+	case it.OriginRight != nil:
+		return store.Find(*it.OriginRight)
+	}
+	return nil
+}
+
+func inheritParent(it, ref *Item) {
+	it.Parent = ref.Parent
+	if it.ParentSub == nil {
+		it.ParentSub = ref.ParentSub
 	}
 }
 

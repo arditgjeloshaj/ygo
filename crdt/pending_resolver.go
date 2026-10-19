@@ -149,6 +149,116 @@ func resolvePendingDependencies(txn *Transaction, pending []*Item) []*Item {
 	return remaining
 }
 
+// pendingWaiter parks a queue index until its client's clock passes clock.
+type pendingWaiter struct {
+	clock uint64
+	index int
+}
+
+// pendingBlocker returns the first unmet clock dependency of an item that
+// tryIntegrate rejected; the item can integrate only once NextClock(client)
+// exceeds clock. Same-client gaps, origins and right origins always block, so
+// the parent ID is reported only when none of them does.
+func pendingBlocker(item *Item, store *StructStore) (ClientID, uint64, bool) {
+	if item.ID.Clock > store.NextClock(item.ID.Client) {
+		return item.ID.Client, item.ID.Clock - 1, true
+	}
+	for _, dep := range []*ID{item.Origin, item.OriginRight} {
+		if dep != nil && dep.Clock >= store.NextClock(dep.Client) {
+			return dep.Client, dep.Clock, true
+		}
+	}
+	if item.Parent == nil && item.parentID != nil && item.parentID.Clock >= store.NextClock(item.parentID.Client) {
+		return item.parentID.Client, item.parentID.Clock, true
+	}
+	return 0, 0, false
+}
+
+// integratePending integrates pending items in dependency order. A rejected
+// item waits on its blocking client and is retried once that client's clock
+// passes the dependency, so each item is retried at most once per dependency.
+// Integrated items are marked in done.
+func integratePending(txn *Transaction, pending []*Item, done []bool) {
+	store := txn.doc.store
+	var waiters map[ClientID][]pendingWaiter
+	stack := make([]int, len(pending))
+	for i := range stack {
+		stack[i] = len(pending) - 1 - i
+	}
+	for len(stack) > 0 {
+		index := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		item := pending[index]
+		if !tryIntegrate(txn, item) {
+			if client, clock, ok := pendingBlocker(item, store); ok {
+				if waiters == nil {
+					waiters = make(map[ClientID][]pendingWaiter)
+				}
+				waiters[client] = pushPendingWaiter(waiters[client], pendingWaiter{clock, index})
+			}
+			continue
+		}
+		done[index] = true
+		heap := waiters[item.ID.Client]
+		if len(heap) == 0 {
+			continue
+		}
+		end := store.NextClock(item.ID.Client)
+		for len(heap) > 0 && heap[0].clock < end {
+			stack = append(stack, heap[0].index)
+			heap = popPendingWaiter(heap)
+		}
+		waiters[item.ID.Client] = heap
+	}
+}
+
+func pushPendingWaiter(heap []pendingWaiter, w pendingWaiter) []pendingWaiter {
+	heap = append(heap, w)
+	for i := len(heap) - 1; i > 0; {
+		parent := (i - 1) / 2
+		if heap[parent].clock <= heap[i].clock {
+			break
+		}
+		heap[parent], heap[i] = heap[i], heap[parent]
+		i = parent
+	}
+	return heap
+}
+
+func popPendingWaiter(heap []pendingWaiter) []pendingWaiter {
+	last := len(heap) - 1
+	heap[0] = heap[last]
+	heap = heap[:last]
+	for i := 0; ; {
+		least, left, right := i, 2*i+1, 2*i+2
+		if left < len(heap) && heap[left].clock < heap[least].clock {
+			least = left
+		}
+		if right < len(heap) && heap[right].clock < heap[least].clock {
+			least = right
+		}
+		if least == i {
+			return heap
+		}
+		heap[i], heap[least] = heap[least], heap[i]
+		i = least
+	}
+}
+
+// resolvePendingWaiters integrates what the dependency walk left and returns
+// the remaining items in queue order.
+func resolvePendingWaiters(txn *Transaction, pending []*Item) []*Item {
+	done := make([]bool, len(pending))
+	integratePending(txn, pending, done)
+	remaining := pending[:0]
+	for i, item := range pending {
+		if !done[i] {
+			remaining = append(remaining, item)
+		}
+	}
+	return remaining
+}
+
 // parkWithinUpdatePending charges only unresolved items to the persistent cap.
 func parkWithinUpdatePending(txn *Transaction, pending []*Item) error {
 	for _, item := range pending {

@@ -206,3 +206,35 @@ func BenchmarkPendingFixedPointFallback(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkInterleavedTyping loads, merges and replays newest first a text
+// that peers typed into in turn, where every struct's origin is another
+// client's struct.
+func BenchmarkInterleavedTyping(b *testing.B) {
+	state, updates, _ := interleavedTyping(5, 20000)
+	tail := append([][]byte{state}, updates[len(updates)-500:]...)
+	b.Run("full_state", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if err := ApplyUpdateV1(New(), state, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("merge_state_tail", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if _, err := MergeUpdatesV1(tail...); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("newest_first", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			doc := New()
+			for j := len(updates) - 1; j >= 0; j-- {
+				if err := ApplyUpdateV1(doc, updates[j], nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+	})
+}

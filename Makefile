@@ -62,6 +62,7 @@ fixtures:
 	node testutil/gen_fixtures_applydelta.js
 	node testutil/gen_fixtures_textformat.js
 	node testutil/gen_fixtures_dupgroups.js
+	node testutil/gen_fixtures_interleaved.js
 
 tools:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest

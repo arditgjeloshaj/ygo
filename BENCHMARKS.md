@@ -430,3 +430,35 @@ ApplyUpdate V1/V2 benchmarks show no significant time/allocation change.
 | Time, ms/op | 327.309 | 1.822 |
 | Allocated, MiB/op | 1.615 | 2.015 |
 | Allocations/op | 10,141.0 | 10,144.5 |
+
+## Interleaved clients
+
+`BenchmarkInterleavedTyping` (`crdt/pending_resolver_bench_test.go`, heavy
+tier) builds the history from #311: five peers take 20,000 turns appending to
+one text, so every struct's origin is another client's struct. It loads the
+encoded state into a fresh document, merges that state with the last 500
+per-turn updates, and applies all 20,000 updates newest first.
+
+```sh
+go test -tags benchheavy ./crdt -run '^$' -bench '^BenchmarkInterleavedTyping$' \
+  -benchmem -benchtime=10x -count=6
+```
+
+Local results: Apple M4 Max, macOS arm64, Go 1.27.2. Before is main with the
+within-update resolver above; after adds the clock waiters and single-walk
+parent inference. Medians.
+
+| Path | Before | After |
+|---|---:|---:|
+| Load full state, ms/op | 204.7 | 7.6 |
+| Load full state, MiB/op | 6.62 | 7.78 |
+| Merge state + 500 updates, ms/op | 1,807.5 | 4.0 |
+| Merge state + 500 updates, MiB/op | 7.29 | 7.06 |
+| Apply newest first, ms/op | 3,107.1 | 11.6 |
+| Apply newest first, MiB/op | 6,498.0 | 17.9 |
+
+On the resolver benchmarks above, `LinearClientQueue` and `OverlapFallback`
+show no significant change and `MultiStructChain` is within 7% (V2, 1k
+clients); the waiters only run on what the dependency walk leaves. The
+ordinary `ApplyUpdateV1/V2` and `MergeUpdatesV1` benchmarks show no
+significant change.

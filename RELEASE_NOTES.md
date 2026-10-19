@@ -18,6 +18,24 @@ queues use temporary memory proportional to their size; remaining unresolved
 items retain the fixed-point fallback and the configured persistent pending limit.
 The public API and update encodings remain compatible.
 
+**Documents several people typed into load, merge and catch up in
+milliseconds.** When peers take turns editing one text, each peer's structs
+depend on the others', and loading the document, merging its updates or
+receiving them out of order used to take seconds once it grew to tens of
+thousands of edits. For five peers and 20,000 turns:
+
+| | before | after |
+|---|---:|---:|
+| load the full state | ~200 ms | ~8 ms |
+| `MergeUpdatesV1` of the state and 500 updates | ~1.8 s | ~4 ms |
+| apply the 20,000 updates newest first | ~3.1 s | ~12 ms |
+
+A blocked struct now waits for the one clock it is missing instead of being
+retried after every other struct, and merges infer each struct's parent by
+following its origin chain once. Documents end up exactly as before, and as
+in Yjs. Thanks to @melodysdreamj for the report and the proposed approach
+(#311).
+
 ## v1.51.11
 
 **Who is affected:** anyone reading ygo's record of live and deleted items
