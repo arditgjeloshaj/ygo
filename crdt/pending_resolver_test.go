@@ -517,3 +517,45 @@ func TestUnit_PendingResolver_OverlappingRangesMatchFixedPoint(t *testing.T) {
 		})
 	}
 }
+
+// Two copies of a range start at the same clock; a consumer of the longer
+// copy's tail must be resolved through it, whichever copy sorts first.
+func TestUnit_PendingResolver_SameStartCopies(t *testing.T) {
+	for _, longFirst := range []bool{false, true} {
+		doc := New(WithClientID(100001))
+		text := doc.GetText("t")
+		short := &Item{ID: ID{Client: 1}, Parent: &text.abstractType, Content: NewContentString("a")}
+		long := &Item{ID: ID{Client: 1}, Parent: &text.abstractType, Content: NewContentString("abc")}
+		consumer := &Item{ID: ID{Client: 2}, Origin: &ID{Client: 1, Clock: 2}, Content: NewContentString("x")}
+		pending := []*Item{consumer, short, long}
+		if longFirst {
+			pending = []*Item{consumer, long, short}
+		}
+		var remaining []*Item
+		doc.Transact(func(txn *Transaction) {
+			remaining = resolvePendingDependencies(txn, pending)
+		})
+		require.Empty(t, remaining)
+		require.Equal(t, "abcx", text.ToString())
+		doc.Destroy()
+	}
+}
+
+// An item whose parent is already known still waits for a future origin.
+func TestUnit_TryIntegrate_FutureOriginWithKnownParent(t *testing.T) {
+	doc := New(WithClientID(1))
+	defer doc.Destroy()
+	text := doc.GetText("t")
+	doc.Transact(func(txn *Transaction) { text.Insert(txn, 0, "abc", nil) })
+	item := &Item{
+		ID:      ID{Client: 2},
+		Parent:  &text.abstractType,
+		Origin:  &ID{Client: 1, Clock: 5},
+		Content: NewContentString("x"),
+	}
+	doc.Transact(func(txn *Transaction) {
+		require.False(t, tryIntegrate(txn, item))
+	})
+	require.Equal(t, "abc", text.ToString())
+	require.Equal(t, uint64(0), doc.StateVector().Clock(2))
+}
