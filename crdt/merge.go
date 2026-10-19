@@ -246,11 +246,8 @@ func buildMergeStore(updates [][]byte, decode func(*Doc, []byte) (map[ClientID][
 // the receiver infers the parent once it has the dependency.
 func resolveParents(store *StructStore) {
 	// Follow each origin chain once. Structs on a chain that reaches no parent
-	// are marked so later walks stop there; a chain longer than the store loops.
-	total := 0
-	for _, items := range store.clients {
-		total += len(items)
-	}
+	// are marked so later walks stop there. Origin cycles are caught with
+	// Brent's algorithm, which keeps each walk linear in the chain's length.
 	var unresolved map[*Item]bool
 	var chain []*Item
 	for _, items := range store.clients {
@@ -264,12 +261,16 @@ func resolveParents(store *StructStore) {
 				continue
 			}
 			chain = append(chain[:0], it)
+			mark, next := it, 2
 			for ref != nil && ref.Parent == nil {
-				if unresolved[ref] || len(chain) > total {
+				if ref == mark || unresolved[ref] {
 					ref = nil
 					break
 				}
 				chain = append(chain, ref)
+				if len(chain) == next {
+					mark, next = ref, 2*next
+				}
 				ref = parentRef(store, ref)
 			}
 			for i := len(chain) - 1; i >= 0; i-- {

@@ -281,3 +281,37 @@ func TestUnit_ResolveParents_InterleavedChainBoundWork(t *testing.T) {
 	}
 	require.LessOrEqual(t, work.lengths, 8*n, "each origin chain must be followed once")
 }
+
+// Origins forming cycles (self-loops, pairs, and a long loop with a tail) never
+// reach a parent; each must be walked a bounded number of times.
+func TestUnit_ResolveParents_OriginCyclesBoundWork(t *testing.T) {
+	const n = 3000
+	work := resolverWork{}
+	store := &StructStore{clients: make(map[ClientID][]*Item)}
+	add := func(client ClientID, origin ClientID) {
+		store.clients[client] = append(store.clients[client], &Item{
+			ID:      ID{Client: client},
+			Origin:  &ID{Client: origin},
+			Content: &resolverWorkContent{NewContentDeleted(1), &work},
+		})
+	}
+	for c := ClientID(1); c <= n; c++ {
+		add(c, c) // self-loop
+	}
+	for c := ClientID(n + 1); c <= 2*n; c += 2 {
+		add(c, c+1)
+		add(c+1, c)
+	}
+	const loop = ClientID(4 * n)
+	for c := loop; c < loop+n; c++ {
+		add(c, c+1) // tail into a loop over the last half
+	}
+	add(loop+n, loop+n/2)
+	resolveParents(store)
+	for _, items := range store.clients {
+		for _, item := range items {
+			require.Nil(t, item.Parent)
+		}
+	}
+	require.LessOrEqual(t, work.lengths, 64*n, "origin cycles must not cost a walk the length of the store")
+}
