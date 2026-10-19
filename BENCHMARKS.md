@@ -367,12 +367,10 @@ fixtures and options on both revisions. Allocation volume is cumulative, not pea
 Local results: Apple M4 Pro, macOS arm64, Go 1.26.8; ten serial alternating
 samples per revision with identical fixtures. Before is main `8ca1701`; after
 is the resolver at `404ae02` on the same base. Both accept every complete fixture below
-with cap=16. The overlap scenario calls the resolver directly.
-
-Time/allocations are medians; allocation volume is cumulative. Peak RSS is the
-maximum of three fresh processes applying identical prepared wire bytes.
-Fixture generation and compilation are excluded; runtime/input/document included.
-Complete-update timers exclude document lifecycle and result checks.
+with cap=16. The overlap scenario calls the resolver directly. Time and
+allocations are medians. Peak RSS is the maximum of three fresh processes
+applying identical prepared wire bytes, excluding fixture generation and
+compilation.
 
 Temporary scheduler storage adds about 0.40 MiB at 10k queued items,
 0.79 MiB at 20k and 1.89 MiB for 40k contiguous items. The four ordinary
