@@ -1,3 +1,35 @@
+## v1.52.1
+
+**Who is affected:** anyone building the iOS or Android bindings with
+`gomobile bind`. Server and library users see no change.
+
+**The Android bindings build again.** Following the README's
+`gomobile bind -target=android` failed twice over: current `gomobile` refuses
+to run unless `golang.org/x/mobile` is in the module's dependencies, and once
+that was added, the generated JNI code did not compile because
+`SyncClient.SetOnStatus`'s parameter name clashed with a name gobind uses
+internally. The parameter is renamed, which changes nothing for callers.
+
+**`mobile/` is now a separate Go module.** `golang.org/x/mobile` requires
+Go 1.26, and putting it in the root module would have forced every user of
+ygo onto Go 1.26. Instead `mobile/` has its own `go.mod`, which pins the
+`gomobile` and `gobind` tools and builds against your checkout. The build
+commands now run from inside `mobile/`:
+
+```sh
+cd mobile
+go install tool
+gomobile bind -target=ios .
+gomobile bind -target=android -androidapi 21 .
+```
+
+The root module still requires only Go 1.23, with the same dependencies. Go
+code that imported `github.com/reearth/ygo/mobile` directly, rather than binding
+it, now has to build it from a checkout too, since the new module is not meant
+to be fetched with `go get`.
+CI now runs a real Android bind on every pull request, so this cannot
+silently break again. Closes #315.
+
 ## v1.52.0
 
 **Who is affected: nobody, unless you choose to be.** If your server never
