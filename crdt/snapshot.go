@@ -70,6 +70,7 @@ func DecodeSnapshot(data []byte) (*Snapshot, error) {
 	if err != nil {
 		return nil, wrapUpdateErr(err)
 	}
+	ds.order = nil // a snapshot's delete set is only queried, so it matches one built from the store
 
 	n, err := dec.ReadVarUint()
 	if err != nil {
@@ -247,8 +248,13 @@ func gcTxnDeleteSet(doc *Doc, txn *Transaction) {
 		}
 		for _, r := range ranges {
 			rangeEnd := r.Clock + r.Len
-			// Skip past items whose end is before the range start.
-			for _, item := range items {
+			// Start at the item containing the range boundary. Searching by
+			// start clock avoids rescanning a growing prefix for every deletion.
+			start := sort.Search(len(items), func(i int) bool { return items[i].ID.Clock > r.Clock }) - 1
+			if start < 0 {
+				start = 0
+			}
+			for _, item := range items[start:] {
 				if item.ID.Clock >= rangeEnd {
 					break
 				}
@@ -308,8 +314,11 @@ func RunGC(doc *Doc) {
 			itemCD, itemIsCD := item.Content.(*ContentDeleted)
 
 			// Merge only when both are tombstones, directly adjacent in the
-			// linked list (no gap, no interleaving items), and clocks are
-			// contiguous (prev.Clock+prev.Len == item.Clock).
+			// linked list (no gap, no interleaving items), clocks are
+			// contiguous (prev.Clock+prev.Len == item.Clock), and the merged
+			// tombstone still encodes item's position: item's Origin is prev's
+			// last clock and both share an OriginRight (Yjs Item.mergeWith).
+			// A live item whose origin is inside item moves on decode otherwise.
 			prev := func() *Item {
 				if len(kept) == 0 {
 					return nil
@@ -317,14 +326,21 @@ func RunGC(doc *Doc) {
 				return kept[len(kept)-1]
 			}()
 			if prevIsCDItem && itemIsCD &&
+				gcMergeable(prev, item) &&
 				prev.Right == item && item.Left == prev &&
-				prev.ID.Clock+uint64(prev.Content.Len()) == item.ID.Clock {
+				prev.ID.Clock+uint64(prev.Content.Len()) == item.ID.Clock &&
+				item.Origin != nil && item.Origin.Client == client && item.Origin.Clock == item.ID.Clock-1 &&
+				originIDEquals(prev.OriginRight, item.OriginRight) {
 				// Absorb item into prev: extend the tombstone length, rewire
 				// the linked list, and drop item from the store slice.
 				prevCD.length += itemCD.length
 				prev.Right = item.Right
 				if item.Right != nil {
 					item.Right.Left = prev
+				}
+				// A marker on item would walk from an off-list node.
+				if prev.Parent != nil {
+					prev.Parent.clearMarkers()
 				}
 				// item is discarded from kept — it no longer exists as a
 				// separate node.
@@ -334,4 +350,18 @@ func RunGC(doc *Doc) {
 		}
 		doc.store.clients[client] = kept
 	}
+}
+
+// gcMergeable reports whether RunGC may absorb tombstone item into prev beyond
+// adjacency and clock contiguity (Yjs Item.mergeWith). A key's itemMap entry
+// is never absorbed, so it stays the on-list node Set links after.
+func gcMergeable(prev, item *Item) bool {
+	if prev.Parent != item.Parent || !parentSubEqual(prev.ParentSub, item.ParentSub) ||
+		prev.MovedBy != item.MovedBy || prev.redone != nil || item.redone != nil {
+		return false
+	}
+	if item.ParentSub != nil && item.Parent != nil && item.Parent.itemMap[*item.ParentSub] == item {
+		return false
+	}
+	return true
 }
