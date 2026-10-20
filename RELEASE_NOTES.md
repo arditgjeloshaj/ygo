@@ -1,4 +1,4 @@
-## Unreleased
+## v1.51.12
 
 **Overlapping updates no longer duplicate content.** When out-of-order V1/V2
 updates partially overlap a pending text or array range, the retry now skips
