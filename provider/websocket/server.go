@@ -128,6 +128,17 @@ func (s *Server) log() *slog.Logger {
 	return slog.Default()
 }
 
+// debugRoom logs a room map insert or removal at Debug, tagged with the room
+// instance so a reused name can be told apart. Formatting is skipped unless
+// Debug is enabled.
+func (s *Server) debugRoom(msg, name string, r *room, site string) {
+	l := s.log()
+	if !l.Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	l.Debug(msg, "room", name, "inst", fmt.Sprintf("%p", r), "site", site)
+}
+
 // peerWriteQueueSize returns the configured per-peer write queue capacity or
 // the default.
 func (s *Server) peerWriteQueueSize() int {
@@ -1680,6 +1691,7 @@ func (s *Server) createRoomPlaceholder(name string) (*room, bool, error) {
 	r.inflight++
 	r.mu.Unlock()
 	s.rooms[name] = r
+	s.debugRoom("room created", name, r, "createRoomPlaceholder")
 	return r, true, nil
 }
 
@@ -1844,6 +1856,7 @@ func (s *Server) failRoomLoad(r *room, name string, loadErr error) {
 	s.rmu.Lock()
 	if cur, ok := s.rooms[name]; ok && cur == r {
 		delete(s.rooms, name)
+		s.debugRoom("room removed", name, r, "failRoomLoad")
 	}
 	s.rmu.Unlock()
 	r.awareness.Destroy()
@@ -2077,6 +2090,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
+			s.log().Debug("peer read loop exited", "room", name, "err", err)
 			break
 		}
 		if firstMessage {

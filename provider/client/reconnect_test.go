@@ -161,10 +161,11 @@ func TestClient_ReconnectsAfterDisconnect_FlushesOfflineEdits(t *testing.T) {
 func TestClient_Reconnect_BackoffResetsOnlyAfterHandshake(t *testing.T) {
 	withFixedRand(t, 0.9) // near the top of each attempt's range, to make growth (if any) obvious
 
-	srv, ts := startServer(t)
+	var srvLog syncBuffer
+	srv, ts := startServer(t, withDebugLog(&srvLog))
 	const room = "reconnect-reset"
 
-	c, _ := dialSynced(t, ts, room, Options{MaxBackoff: 30 * time.Second})
+	c, trace := dialSyncedTraced(t, ts, room, Options{MaxBackoff: 30 * time.Second})
 
 	type event struct {
 		state State
@@ -190,7 +191,7 @@ func TestClient_Reconnect_BackoffResetsOnlyAfterHandshake(t *testing.T) {
 	const resetThreshold = 700 * time.Millisecond
 	for i := 0; i < 3; i++ {
 		waitSynced := statusWaiter(t, c, StateSynced)
-		require.NoError(t, srv.CloseRoom(room, true))
+		closeRoomOrDump(t, srv, room, trace, &srvLog)
 		waitSynced()
 	}
 
