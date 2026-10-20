@@ -596,7 +596,6 @@ func (s *Server) CloseRoom(name string, force bool) error {
 		return nil
 	}
 	delete(s.rooms, name)
-	s.debugRoom("room removed", name, rm, "CloseRoom")
 	if rm.persistStop != nil {
 		select {
 		case <-rm.persistStop:

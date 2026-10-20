@@ -1,19 +1,14 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
@@ -60,11 +55,11 @@ func dumpGoroutines(t *testing.T, what string) {
 		buf := make([]byte, size)
 		n := runtime.Stack(buf, true)
 		if n < size {
-			t.Logf("%s: goroutine dump follows\n%s", what, buf[:n])
+			t.Logf("%s: goroutine dump at timeout follows\n%s", what, buf[:n])
 			return
 		}
 		if size >= maxGoroutineDump {
-			t.Logf("%s: goroutine dump follows, TRUNCATED at the %d-byte cap\n%s",
+			t.Logf("%s: goroutine dump at timeout follows, TRUNCATED at the %d-byte cap\n%s",
 				what, size, buf[:n])
 			return
 		}
@@ -202,101 +197,18 @@ func dialSynced(t *testing.T, ts *httptest.Server, room string, o Options) (*Cli
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	connect(t, c)
-	select {
-	case <-c.Synced():
-	case <-time.After(hangDeadline):
-		dumpGoroutines(t, fmt.Sprintf("client for room %q did not sync", room))
-		t.Fatalf("client for room %q did not sync within %s", room, hangDeadline)
-	}
+	connectSynced(t, c)
 	return c, o.Doc
 }
 
-// syncBuffer is a goroutine-safe log sink.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-// withDebugLog routes the server's log, at Debug, into buf.
-func withDebugLog(buf *syncBuffer) func(*ygws.Server) {
-	return func(s *ygws.Server) {
-		s.Logger = slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	}
-}
-
-// statusTrace records every status a Client reports, with its error.
-type statusTrace struct {
-	mu     sync.Mutex
-	start  time.Time
-	events []string
-}
-
-func (st *statusTrace) String() string {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return strings.Join(st.events, "\n")
-}
-
-// dialSyncedTraced is dialSynced with a statusTrace subscribed before Connect,
-// so the trace covers the first handshake too.
-func dialSyncedTraced(t *testing.T, ts *httptest.Server, room string, o Options) (*Client, *statusTrace) {
+// connectSynced starts c and blocks until its first StateSynced has been
+// delivered to subscribers. Waiting on Synced() is not enough: markSynced
+// closes it before emitStatus snapshots subscribers, so a StateSynced waiter
+// armed right after Synced() fires can still receive this initial event and
+// return before the next handshake it was meant to wait for.
+func connectSynced(t *testing.T, c *Client) {
 	t.Helper()
-	if o.Doc == nil {
-		o.Doc = crdt.New()
-	}
-	o.URL = wsURL(ts, room)
-	c, err := New(o)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	st := &statusTrace{start: time.Now()}
-	unsub := c.OnStatus(func(s Status) {
-		st.mu.Lock()
-		name := [...]string{"Connecting", "Connected", "Synced", "Disconnected"}
-		state := fmt.Sprint(s.State)
-		if int(s.State) < len(name) {
-			state = name[s.State]
-		}
-		st.events = append(st.events, fmt.Sprintf("%+8.3fms %s err=%v",
-			float64(time.Since(st.start).Microseconds())/1000, state, s.Err))
-		st.mu.Unlock()
-	})
-	t.Cleanup(unsub)
+	wait := statusWaiter(t, c, StateSynced)
 	connect(t, c)
-	select {
-	case <-c.Synced():
-	case <-time.After(hangDeadline):
-		dumpGoroutines(t, fmt.Sprintf("client for room %q did not sync", room))
-		t.Fatalf("client for room %q did not sync within %s", room, hangDeadline)
-	}
-	return c, st
-}
-
-// closeRoomOrDump force-closes room and, if the server no longer has it, logs
-// what led there before failing: the rooms the server does hold, the client's
-// status trace, the server's debug log (room create/remove sites and peer
-// read-loop exits) and every goroutine.
-func closeRoomOrDump(t *testing.T, srv *ygws.Server, room string, st *statusTrace, srvLog *syncBuffer) {
-	t.Helper()
-	err := srv.CloseRoom(room, true)
-	if errors.Is(err, ygws.ErrRoomNotFound) {
-		t.Logf("CloseRoom(%q): %v; server rooms now: %q", room, err, srv.Rooms())
-		t.Logf("client status trace:\n%s", st)
-		t.Logf("server debug log:\n%s", srvLog)
-		dumpGoroutines(t, "CloseRoom returned ErrRoomNotFound")
-	}
-	require.NoError(t, err)
+	wait()
 }

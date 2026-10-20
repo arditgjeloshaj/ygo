@@ -185,7 +185,6 @@ func (s *Server) evictIdleRoom(name string, rm *room, expectIdle time.Time) bool
 	if len(rm.peers) == 0 && rm.idleSince.Equal(expectIdle) && rm.inflight == 0 {
 		if current, ok := s.rooms[name]; ok && current == rm {
 			delete(s.rooms, name)
-			s.debugRoom("room removed", name, rm, "evictIdleRoom")
 			evicted = true
 		}
 		if rm.persistStop != nil {
