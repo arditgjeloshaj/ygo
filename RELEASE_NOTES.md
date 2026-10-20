@@ -15,9 +15,16 @@ Without a close code, the client sees an abnormal closure (1006), which looks
 like a network failure, so it reconnects. With one (say 4001, "session
 revoked"), the client can stop and tell the user what happened.
 
-**What stays the same.** A context cancelled with any other cause — or with no
-cause — closes the socket exactly as before, with no close frame. No exported
-API was added. Closes #264.
+The cause may be wrapped, as in `fmt.Errorf("revoking %s: %w", user, cause)`.
+Only codes 1000 and 3000–4999 are sent, since a client rejects the others as a
+protocol error. The reason is truncated to 123 bytes, the most a close frame can
+carry, and invalid UTF-8 is dropped from it. From the cancel on, the server
+ignores everything the peer sends, so a revoked client cannot keep editing by
+not reading its socket; the close frame waits at most one second.
+
+**What stays the same.** A context cancelled with any other cause, with no
+cause, or with a code that cannot be sent closes the socket exactly as before,
+with no close frame. No exported API was added. Closes #264.
 
 ## v1.51.13
 

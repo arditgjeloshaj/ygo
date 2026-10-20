@@ -15,8 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the server now sends the peer a close frame with that code and reason before
   closing the socket. An embedder can end one session with a code in the
   4000–4999 range (for example "session revoked") that a client can tell apart
-  from a network drop. Any other cause closes the socket exactly as before,
-  with no close frame (abnormal closure, 1006).
+  from a network drop. A wrapped cause (`fmt.Errorf("...: %w", cause)`) counts.
+  Only codes 1000 and 3000–4999 are sent; the reason is truncated to 123 bytes
+  and invalid UTF-8 is dropped from it. The peer's input is ignored from the
+  cancel on, and the close frame waits at most one second, so a revoked peer
+  that stops reading cannot keep writing into the room. Any other cause, or an
+  unsendable code, closes the socket exactly as before, with no close frame
+  (abnormal closure, 1006).
 
 ## [1.51.13] — 2026-10-20
 
