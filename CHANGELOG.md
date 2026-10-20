@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.52.1] — 2026-10-20
+## [1.53.0] — 2026-10-20
 
 ### Fixed
 
@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`mobile/` is now its own Go module, `github.com/reearth/ygo/mobile`.**
   `golang.org/x/mobile` requires Go 1.26, so adding it to the root module would
   have raised the Go floor for every user of the library. The root module keeps
-  Go 1.23 and its dependencies unchanged. `mobile/go.mod` pins `gomobile` and
-  `gobind` as tools and builds against the surrounding checkout through a
-  `replace` directive: run `go install tool` and `gomobile bind` from inside
-  `mobile/`. CI now runs the `mobile/` tests, lint, govulncheck and a real
+  Go 1.23 and its dependencies unchanged, but no longer contains the `mobile`
+  package: direct importers must require `github.com/reearth/ygo/mobile`
+  (tagged `mobile/v1.53.0`). `mobile/go.mod` pins `gomobile` and `gobind` as
+  tools and builds against the surrounding checkout through a `replace`
+  directive: run `go install tool` and `gomobile bind` from inside `mobile/`.
+  CI now runs the `mobile/` tests, lint, govulncheck and a real
   Android bind.
 
 ## [1.52.0] — 2026-10-20

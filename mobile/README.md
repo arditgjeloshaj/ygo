@@ -46,9 +46,14 @@ The bound surface is:
 `mobile/` is a **separate Go module** from the rest of ygo. `gomobile bind`
 needs `golang.org/x/mobile` in the module it binds, and `golang.org/x/mobile`
 requires Go 1.26, so keeping it here leaves the root module's Go 1.23 floor and
-dependency list alone. `mobile/go.mod` points at the surrounding checkout with
-`replace github.com/reearth/ygo => ../`, so build from a clone of this
-repository rather than with `go get`.
+dependency list alone. Inside this repository, `mobile/go.mod` builds against
+the surrounding checkout through `replace github.com/reearth/ygo => ../`. Go
+code that imports the package from elsewhere requires the module as usual:
+`go get github.com/reearth/ygo/mobile@v1.53.0`.
+
+Each release tags the module as `mobile/vX.Y.Z` next to the root `vX.Y.Z`, and
+`mobile/go.mod`'s `require github.com/reearth/ygo` must name that same root
+version, so an importer gets the root code the bindings were tested against.
 
 `gomobile` and `gobind` are pinned as `tool` directives in `mobile/go.mod`.
 From the `mobile/` directory:

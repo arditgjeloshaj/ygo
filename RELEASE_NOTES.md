@@ -1,4 +1,4 @@
-## v1.52.1
+## v1.53.0
 
 **Who is affected:** anyone building the iOS or Android bindings with
 `gomobile bind`. Server and library users see no change.
@@ -23,10 +23,16 @@ gomobile bind -target=ios .
 gomobile bind -target=android -androidapi 21 .
 ```
 
-The root module still requires only Go 1.23, with the same dependencies. Go
-code that imported `github.com/reearth/ygo/mobile` directly, rather than binding
-it, now has to build it from a checkout too, since the new module is not meant
-to be fetched with `go get`.
+The root module still requires only Go 1.23, with the same dependencies.
+
+**This is a minor release because a package moved.** The root module no longer
+contains `github.com/reearth/ygo/mobile`. Go code that imported it directly,
+rather than binding it, must now require the new module, which needs Go 1.26:
+
+```sh
+go get github.com/reearth/ygo/mobile@v1.53.0
+```
+
 CI now runs a real Android bind on every pull request, so this cannot
 silently break again. Closes #315.
 
