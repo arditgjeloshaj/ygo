@@ -561,8 +561,10 @@ func encodeContentV2(enc *v2Encoder, c Content, offset int) {
 
 func encodeDeleteSetV2(enc *v2Encoder, ds DeleteSet) {
 	clients := make([]ClientID, 0, len(ds.clients))
-	for c := range ds.clients {
-		clients = append(clients, c)
+	for c, ranges := range ds.clients {
+		if len(nonEmptyRanges(ranges)) > 0 {
+			clients = append(clients, c)
+		}
 	}
 	// Yjs V2 writes delete set clients in DESCENDING order.
 	sort.Slice(clients, func(i, j int) bool { return clients[i] > clients[j] })
@@ -571,13 +573,32 @@ func encodeDeleteSetV2(enc *v2Encoder, ds DeleteSet) {
 	for _, c := range clients {
 		enc.resetDsCurVal()
 		enc.restEnc.WriteVarUint(uint64(c))
-		ranges := ds.clients[c]
+		ranges := nonEmptyRanges(ds.clients[c])
 		enc.restEnc.WriteVarUint(uint64(len(ranges)))
 		for _, r := range ranges {
 			enc.writeDsClock(r.Clock)
 			enc.writeDsLen(r.Len)
 		}
 	}
+}
+
+// nonEmptyRanges returns ranges without zero-length entries, which delete
+// nothing and have no V2 encoding (lengths are written as len-1). It returns
+// ranges itself when there are none to drop.
+func nonEmptyRanges(ranges []DeleteRange) []DeleteRange {
+	for i, r := range ranges {
+		if r.Len > 0 {
+			continue
+		}
+		kept := append(make([]DeleteRange, 0, len(ranges)-1), ranges[:i]...)
+		for _, r := range ranges[i+1:] {
+			if r.Len > 0 {
+				kept = append(kept, r)
+			}
+		}
+		return kept
+	}
+	return ranges
 }
 
 // ── V2 decoding ───────────────────────────────────────────────────────────────

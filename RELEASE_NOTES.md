@@ -1,3 +1,16 @@
+## v1.54.0
+
+**Who is affected: anyone who applies updates from peers they do not fully
+trust, which includes every `provider/websocket` server.**
+
+A V1 update whose delete set contains a range of length 0 deleted the whole
+item at that clock. Any connected peer could send a 6-byte update that wiped
+text or array content another client wrote, and Yjs peers, which delete
+nothing for such a range, diverged from ygo. Zero-length ranges are now
+ignored, matching Yjs. Converting such an update to V2 with `UpdateV1ToV2`
+also produced an update that failed to decode; the V2 encoder now drops these
+ranges, since they delete nothing. No API or wire format changes.
+
 ## v1.53.1
 
 **Who is affected: servers that set `RoomIdleTimeout` and write to rooms with

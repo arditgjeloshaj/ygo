@@ -170,10 +170,20 @@ func (ds *DeleteSet) applyToPartial(txn *Transaction) DeleteSet {
 		items := txn.doc.store.clients[client]
 		if len(items) == 0 {
 			// No items for this client — entire set of ranges is unresolvable.
-			unresolvable.clients[client] = append(unresolvable.clients[client], ranges...)
+			for _, r := range ranges {
+				if r.Len > 0 {
+					unresolvable.clients[client] = append(unresolvable.clients[client], r)
+				}
+			}
 			continue
 		}
 		for _, r := range ranges {
+			// A zero-length range deletes nothing (Yjs readAndApplyDeleteSet).
+			// Without this skip the loop below tombstones the item containing
+			// r.Clock, since no boundary split isolates an empty range.
+			if r.Len == 0 {
+				continue
+			}
 			// Split at the range boundaries so each overlapping item lies
 			// entirely inside [r.Clock, r.Clock+r.Len). Pre-#72 we deleted
 			// overlapping items whole, which wiped content outside the range

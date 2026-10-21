@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.54.0] — 2026-10-21
+
+### Fixed
+
+- **`crdt`: a zero-length delete range no longer deletes anything.** Applying
+  a V1 update whose delete set held a range of length 0 tombstoned the whole
+  item containing that clock, so a 6-byte update from any peer could delete
+  text another client wrote. Yjs deletes nothing for such a range, so ygo and
+  Yjs peers also diverged. Zero-length ranges are now skipped when applied and
+  never parked as pending deletions. V2 updates cannot carry one (V2 writes
+  each length as `len-1`), but the V2 encoder underflowed on one taken from a
+  V1 input, so `UpdateV1ToV2` and other V2 encoding of such a delete set wrote
+  an update that failed to decode; the V2 encoder now drops them.
+
 ## [1.53.1] — 2026-10-21
 
 ### Fixed
