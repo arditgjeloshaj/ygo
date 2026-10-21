@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  changed_files_summary: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - "!**/go.sum"
+    - "!testutil/package-lock.json"
+    - "!**/testdata/**"
+    - "!testutil/fixtures/**"
+    - "!testutil/go_fixtures/**"
+    - "!**/*.bin"
+
+  path_instructions:
+    - path: "crdt/**/*.go"
+      instructions: |
+        ygo is a pure-Go port of Yjs and must stay byte-for-byte wire compatible
+        with it. Flag any change that could make two peers diverge, or make ygo's
+        V1/V2 encoding differ from what yjs would produce for the same operations.
+        Watch for integration order, origin/rightOrigin handling, delete-set
+        merging, pending-struct parking, and GC. Shared-type references must be
+        obtained outside a Transact closure; reading them inside can deadlock.
+    - path: "encoding/**/*.go"
+      instructions: |
+        lib0 wire encoding. Decoders read untrusted input: check bounds, length
+        prefixes, allocation sizes and UTF-8 validity before use, and never panic
+        on malformed bytes.
+    - path: "provider/**/*.go"
+      instructions: |
+        Network-facing code handling untrusted peers. Check for goroutine leaks,
+        lock ordering, unbounded queues or memory growth, and that gorilla
+        websocket connections have a single reader and a single writer.
+    - path: "cluster/**/*.go"
+      instructions: |
+        Cross-node relay. A slow or failing room must not block other rooms.
+        Check context cancellation and shutdown draining.
+    - path: "persistence/**/*.go"
+      instructions: |
+        Storage adapters. Flag any path where an acknowledged update could be
+        lost on flush, eviction or shutdown.
+    - path: "mobile/**/*.go"
+      instructions: |
+        Separate Go module bound with gomobile. Exported APIs may only use
+        gomobile-compatible types (no maps, slices of structs, channels or
+        multiple non-error return values).
+    - path: "**/*_test.go"
+      instructions: |
+        Tests should fail without the fix they cover. Prefer deterministic
+        synchronisation over sleeps and timeouts.
+    - path: "**/*.go"
+      instructions: |
+        Code comments should be terse: one sentence for the why, and no issue
+        or PR numbers in comments.
+    - path: "{CHANGELOG.md,RELEASE_NOTES.md}"
+      instructions: |
+        No [Unreleased] section: entries go under the version they ship in, and
+        both files must name the same newest version. Exported API additions are
+        a MINOR bump even in a bug-fix PR.
+
+  tools:
+    golangci-lint:
+      enabled: true
+    markdownlint:
+      enabled: false
+
+chat:
+  auto_reply: true
