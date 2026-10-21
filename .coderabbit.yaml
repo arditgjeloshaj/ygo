@@ -20,8 +20,7 @@ reviews:
   path_filters:
     - "!**/go.sum"
     - "!testutil/package-lock.json"
-    - "!**/testdata/**"
-    - "!testutil/fixtures/**"
+    - "!benchmarks/testdata/editing-trace.json"
     - "!testutil/go_fixtures/**"
     - "!**/*.bin"
 
@@ -32,11 +31,17 @@ reviews:
         with it. Flag any change that could make two peers diverge, or make ygo's
         V1/V2 encoding differ from what yjs would produce for the same operations.
         Watch for integration order, origin/rightOrigin handling, delete-set
-        merging, pending-struct parking, and GC. Shared-type references must be
-        obtained outside a Transact closure; reading them inside can deadlock.
-    - path: "encoding/**/*.go"
+        merging, pending-struct parking, and GC. Inside a Transact callback, root
+        types must come from txn.GetText/GetMap/GetArray/GetXmlFragment; the Doc
+        methods of the same name take the document lock and self-deadlock there.
+    - path: "**/testdata/*_fixtures.json"
       instructions: |
-        lib0 wire encoding. Decoders read untrusted input: check bounds, length
+        These fixtures are generated from yjs by the testutil/gen_*.js scripts and
+        are the conformance oracle. Flag any change that is not a regeneration by
+        those scripts, especially an expected value edited to match Go output.
+    - path: "{encoding,sync,awareness,internal/anycodec}/**/*.go"
+      instructions: |
+        Wire decoders for bytes from untrusted peers. Check bounds, length
         prefixes, allocation sizes and UTF-8 validity before use, and never panic
         on malformed bytes.
     - path: "provider/**/*.go"
@@ -54,9 +59,12 @@ reviews:
         lost on flush, eviction or shutdown.
     - path: "mobile/**/*.go"
       instructions: |
-        Separate Go module bound with gomobile. Exported APIs may only use
-        gomobile-compatible types (no maps, slices of structs, channels or
-        multiple non-error return values).
+        Separate Go module bound with gomobile. Exported functions and methods may
+        only use string, int64, bool, []byte, error, pointers to the package's
+        exported structs, and its exported observer interfaces. Flag unsigned
+        ints, maps, non-byte slices, any, channels, variadics, func-typed
+        parameters, and more than one non-error return value. Client IDs cross
+        the boundary as int64 within [0, 2^53 - 1].
     - path: "**/*_test.go"
       instructions: |
         Tests should fail without the fix they cover. Prefer deterministic
