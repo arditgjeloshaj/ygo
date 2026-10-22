@@ -5,7 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.54.0] — 2026-10-21
+## [1.54.0] — 2026-10-22
+
+### Added
+
+- **`crdt.SnapshotContainsUpdateV1(snap, update)`** reports whether a snapshot
+  already holds everything a V1 update carries (every struct below its state
+  vector, every deletion in its delete set), without integrating the update.
+  Matches Yjs `snapshotContainsUpdate`.
+- **`crdt.DocContainsUpdateV1(doc, update)`** answers the same question for a
+  live document without building a snapshot: it decodes the update first,
+  holds the document's read lock only, and checks the update's deletion ranges
+  against the store in one forward pass per client.
+- **`crdt.ApplyUpdateV1Landed(doc, update, origin)`** applies a V1 update as
+  `ApplyUpdateV1` does and, when the apply fails after part of the update
+  integrated, also returns a V1 update of exactly that part: the structs this
+  call added and the deletions it made.
+- **`provider/websocket`: `Server.OnPeerUpdate`, a hook that runs in place of
+  the room's own apply of a read-write peer's SyncStep2 or Update.** The hook is
+  handed the room, its document, the update's V1 bytes and the origin, and an
+  `apply` function that applies the update as the room does without a hook (a
+  second call returns `ErrPeerUpdateApplied`; a call after the hook returned
+  applies nothing and returns `ErrPeerUpdateHookReturned`), so an embedder can
+  refuse an update before it reaches the room or any other peer - a
+  per-document size bound, schema validation, write moderation - or hold a lock
+  of its own across the apply. An update the hook refuses is not broadcast, is
+  answered `SyncStatus(0)` on a Hocuspocus-framed connection, and closes the
+  peer: with the code and reason of a `*PeerClose` the hook's error is or
+  wraps (1000 or 3000-4999; reason cut to a close frame's 123 bytes), and with
+  4205 "Reset Connection" for a plain error, a panic or any other code, as
+  `@hocuspocus/server` closes on a rejection. An update `apply` applied is
+  broadcast and answered `SyncStatus(1)` whatever the hook returns. Read-only
+  peers never reach the hook. The hook is the counterpart of
+  `@hocuspocus/server`'s `beforeHandleMessage`. Nil, the default, leaves the
+  behaviour unchanged.
 
 ### Fixed
 
@@ -18,6 +51,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each length as `len-1`), but the V2 encoder underflowed on one taken from a
   V1 input, so `UpdateV1ToV2` and other V2 encoding of such a delete set wrote
   an update that failed to decode; the V2 encoder now drops them.
+- **`provider/websocket`: a Hocuspocus-framed connection is answered a
+  `SyncStatus` (tag 8) for every SyncStep2 or Update it sends.** ygo defined
+  the tag but never sent it, so `@hocuspocus/provider`'s unsynced-changes count,
+  which only a `SyncStatus(true)` lowers, never returned to zero against ygo,
+  and `hasUnsyncedChanges` stayed true for the life of the connection. With
+  `HocuspocusFraming` set, every SyncStep2 or Update, under Sync (tag 0) or
+  SyncReply (tag 4), now gets exactly one `SyncStatus`, in the order the frames
+  arrived: 1 once the room applied it, and for a read-only connection 0 for an
+  Update and, for a SyncStep2, 1 when the room already holds everything in it
+  and 0 otherwise. Where those updates decode, this is how `@hocuspocus/server`
+  answers. ygo answers 0 when the room did not fully apply the update (it
+  overflows `MaxPendingItems`, say). For a sync frame that does not decode, ygo
+  sends no `SyncStatus` and closes the connection with 1002 (protocol error).
+  For a read-only SyncStep2 whose update does not decode, ygo answers 0 and
+  keeps the connection. All three differ from `@hocuspocus/server` on purpose
+  (see the release notes). Connections on plain y-websocket framing get no
+  `SyncStatus`. The read-only SyncStep2 answer uses `crdt.DocContainsUpdateV1`,
+  so it takes only the document's read lock.
+- **`provider/websocket`: the part of a partly applied update never reached
+  the room's other peers.** ygo integrates an update item by item, so one that
+  overflows `MaxPendingItems` can leave part of itself in the room, but the
+  server broadcast nothing for an update it could not fully apply. It now
+  broadcasts that part, and only that part (from
+  `crdt.ApplyUpdateV1Landed`), to the room's other peers on either framing.
+- **`provider/websocket`: frames a peer sent after the server queued its close
+  were still handled.** Once the server queues a close for a connection (the
+  1002 above, or 4401 after a failed in-band auth), the read loop handles
+  nothing more from it, including frames it has already received, as it
+  already did after a context-cause close.
 
 ## [1.53.1] — 2026-10-21
 

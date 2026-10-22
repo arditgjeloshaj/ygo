@@ -11,6 +11,126 @@ ignored, matching Yjs. Converting such an update to V2 with `UpdateV1ToV2`
 also produced an update that failed to decode; the V2 encoder now drops these
 ranges, since they delete nothing. No API or wire format changes.
 
+**Who is affected: servers that set `HocuspocusFraming` for
+`@hocuspocus/provider` clients.** Connections on plain y-websocket framing get
+no `SyncStatus`. On either framing, a partly applied update now reaches the
+room's other peers (below).
+
+`@hocuspocus/provider` counts the edits it has sent and lowers the count only
+when the server answers one with a `SyncStatus` (tag 8) message, which
+`@hocuspocus/server` sends after every SyncStep2 or Update. ygo defined the tag
+but never sent it, so against ygo the provider's `hasUnsyncedChanges` stayed
+true for as long as the connection lived, and an editor could never tell its
+edits had reached the server.
+
+With `HocuspocusFraming` set, ygo now answers every SyncStep2 or Update, under
+Sync (tag 0) or SyncReply (tag 4), with exactly one `SyncStatus`, in the order
+the frames arrived, so a client can pair each answer with the frame it sent:
+
+| The client sends | The room | `SyncStatus` |
+|---|---|---|
+| a SyncStep2 or Update | applies it | 1 |
+| a SyncStep2 or Update | does not fully apply it (it overflows `MaxPendingItems`, say) | 0 |
+| an Update, read-only | does not take it | 0 |
+| a SyncStep2, read-only | already holds everything in it | 1 |
+| a SyncStep2, read-only | lacks something in it, and does not take it | 0 |
+| a sync frame that does not decode | closes the connection with 1002 | none |
+
+Three answers differ from `@hocuspocus/server` 2.15.3, on purpose:
+
+- **An update the room does not fully apply.** `@hocuspocus/server` answers 1
+  there: Yjs has no cap on pending structs, so it parks an update that
+  overflows `MaxPendingItems`, and y-protocols swallows any error from an
+  update that does not decode. An answer of 1 tells the client the room holds
+  an edit it does not. ygo answers 0 and keeps the connection, so the client
+  keeps the edit. An unrelated update on the same connection is answered 1.
+  The client's own next edits come after the part the room never took, so
+  the room parks them waiting for it: each is answered 1 while it fits under
+  the cap, as any update that parks is, and 0 once the cap is full. The room
+  shows none of them until the part it lacks arrives.
+- **A sync message that does not decode** (its sub-type is unknown or
+  missing, or its payload is cut short). On a read-write connection,
+  `@hocuspocus/server` answers a SyncStep2 or Update whose payload is cut short
+  with 1 and keeps the connection, because y-protocols' `readSyncStep2` catches
+  the read error along with the apply error. Other such messages get 0 (a
+  read-only Update) or a 4403 close (an unknown or missing sub-type, a SyncStep1,
+  a read-only SyncStep2). ygo sends no `SyncStatus` for any of them and closes
+  with 1002 (protocol error): an answer of 1 would acknowledge an edit the room
+  never saw, and 4403 would strand the provider. From the moment ygo queues
+  that close, it handles no later frame from the connection, including frames
+  already received.
+- **A read-only SyncStep2 whose update does not decode.** `@hocuspocus/server`
+  closes the connection with 4403, because its `snapshotContainsUpdate` check
+  throws. ygo answers 0 and keeps the connection: the room does not hold the
+  update, and 4403 would strand the provider.
+
+`crdt.SnapshotContainsUpdateV1` is new: it reports whether a snapshot already
+holds everything a V1 update carries, as Yjs `snapshotContainsUpdate` does.
+`crdt.DocContainsUpdateV1` is new too: the same check against a live document,
+which decodes the update first, takes only the document's read lock, and
+checks the update's deletion ranges against the store in one forward pass per
+client. The read-only SyncStep2 answer uses it, so the answer to a viewer's
+SyncStep2 no longer takes the room's exclusive lock.
+
+**The part of a partly applied update now reaches the other peers.** ygo
+integrates an update item by item, so one that overflows `MaxPendingItems` can
+leave part of itself in the room. The server used to broadcast nothing for
+such an update; it now broadcasts exactly the part that integrated, on either
+framing. `crdt.ApplyUpdateV1Landed` is new: it applies an update as
+`ApplyUpdateV1` does and, when the apply fails, returns that part as a V1
+update.
+
+**Closing a connection now stops its input.** Once the server queues a close
+for a connection (the 1002 above, or 4401 after a failed in-band auth), the
+read loop handles nothing more from it, as it already did after a
+context-cause close.
+
+**Who is affected: servers that want to look at a read-write peer's update
+before it applies** — a per-document size bound, schema validation, write
+moderation — or that want a lock of their own held across the apply.
+
+`Server.OnPeerUpdate`, if set, runs in place of the room's own apply of a
+read-write peer's SyncStep2 or Update (Sync/SyncReply, tags 0/4). It is handed
+the room name, its document, the update's V1 bytes and the transaction origin,
+and an `apply` function that applies the update exactly as the room does
+without a hook. A second call to `apply` returns `ErrPeerUpdateApplied`.
+`apply` must be called before the hook returns: a call after that applies
+nothing and returns `ErrPeerUpdateHookReturned`, since by then the peer has
+been answered and the update would reach no other peer.
+
+An update the hook refuses (it returns, or panics, without `apply` having
+applied it) is not broadcast, is answered `SyncStatus(0)` on a
+Hocuspocus-framed connection, and closes the peer after that answer:
+
+| The hook | Close |
+|---|---|
+| returns or wraps a `*PeerClose{Code, Reason}`, Code 1000 or 3000-4999 | Code and Reason, the reason cut to 123 bytes at a rune boundary |
+| returns a `*PeerClose` with any other code | 4205 "Reset Connection" |
+| returns any other error, or panics | 4205 "Reset Connection" |
+
+The close is needed because the client's later edits build on the refused
+one, so the room could not integrate them: without it they would park in the
+room, be answered `SyncStatus(1)` and reach the other peers, who would park
+them too. The client still holds the refused edit, so when it reconnects it
+sends it again, with any edit built on it, and the hook sees each of them
+again; an edit the hook applies that builds on a refused one parks in the
+room. `@hocuspocus/provider` 2.x reconnects at once after a 4205 close, so a
+hook that keeps refusing a 2.x client keeps closing it; a `*PeerClose` with
+4401 stops it reconnecting. 4.x waits its configured `delay` first. Plain
+y-websocket connections are closed the same way.
+
+When the hook calls `apply` and the room itself does not take the update (it
+overflows `MaxPendingItems`, say), the peer is answered as without a hook and
+keeps the connection, unless the hook returns a `*PeerClose`. An update
+`apply` applied is broadcast and answered `SyncStatus(1)` whatever the hook
+returns afterward. Read-only peers never reach the hook, as before. Nil, the
+default, leaves every peer's update applied exactly as it was.
+
+This is the counterpart of `@hocuspocus/server`'s `beforeHandleMessage`
+(`packages/server/src/Connection.ts`), which runs before the message
+handler's own apply and closes the connection on a rejection with the error's
+code and reason, or with `ResetConnection` (4205) when it has none.
+
 ## v1.53.1
 
 **Who is affected: servers that set `RoomIdleTimeout` and write to rooms with
