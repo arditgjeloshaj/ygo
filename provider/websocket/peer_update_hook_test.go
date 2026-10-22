@@ -484,10 +484,14 @@ func TestInteg_OnPeerUpdate_NilPeerCloseClosesWithResetConnection(t *testing.T) 
 }
 
 // An apply the hook started but that is still running when the hook returns
-// finishes before the peer is answered, so SyncStatus(1) never arrives ahead of
-// the room holding the update.
+// finishes before the peer is answered. The observer holds the apply open until
+// the test has seen no answer arrive, so without the wait the test fails.
 func TestInteg_OnPeerUpdate_AnswerWaitsForAnApplyStillRunning(t *testing.T) {
-	var released atomic.Bool
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseApply := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseApply)
+	hookReturned := make(chan struct{})
 	srv, ts := hocuspocusServer(t, func(srv *ygws.Server) {
 		srv.OnPeerUpdate = func(info ygws.PeerUpdateInfo, apply func() error) error {
 			started := make(chan struct{})
@@ -495,12 +499,12 @@ func TestInteg_OnPeerUpdate_AnswerWaitsForAnApplyStillRunning(t *testing.T) {
 			info.Doc.OnUpdate(func([]byte, any) {
 				once.Do(func() {
 					close(started)
-					time.Sleep(50 * time.Millisecond)
-					released.Store(true)
+					<-release
 				})
 			})
 			go func() { _ = apply() }()
 			<-started
+			close(hookReturned)
 			return nil
 		}
 	})
@@ -508,7 +512,37 @@ func TestInteg_OnPeerUpdate_AnswerWaitsForAnApplyStillRunning(t *testing.T) {
 	editor := hpDial(t, ts, "room", false, editorDoc)
 
 	hpSend(t, editor, "room", tagSync, ygsync.EncodeUpdate(textUpdate(editorDoc, "slow")))
-	assert.Equal(t, []uint64{1}, syncStatuses(t, editor, "room"))
-	assert.True(t, released.Load(), "the peer was answered before its apply finished")
+	select {
+	case <-hookReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hook never returned")
+	}
+	answered := make(chan uint64, 1)
+	go func() {
+		defer close(answered)
+		for {
+			tag, body, err := hpRead(editor, "room", 5*time.Second)
+			if err != nil {
+				return
+			}
+			if tag == tagSyncStatus {
+				if flag, err := encoding.NewDecoder(body).ReadVarUint(); err == nil {
+					answered <- flag
+				}
+				return
+			}
+		}
+	}()
+	// The window only bounds the search for an early answer: with the wait, no
+	// answer can arrive before the release, so a slow machine cannot fail it.
+	select {
+	case flag := <-answered:
+		t.Fatalf("the peer was answered %d before its apply finished", flag)
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseApply()
+	flag, ok := <-answered
+	require.True(t, ok, "no SyncStatus after the apply finished")
+	assert.Equal(t, uint64(1), flag)
 	assert.Equal(t, "slow", srv.GetDoc("room").GetText("t").ToString())
 }
