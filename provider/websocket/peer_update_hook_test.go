@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -479,4 +480,35 @@ func TestInteg_OnPeerUpdate_NilPeerCloseClosesWithResetConnection(t *testing.T) 
 	assert.Equal(t, []uint64{0}, statuses)
 	require.NotNil(t, closed, "the refusal must close the connection")
 	assert.Equal(t, 4205, closed.Code)
+	assert.NotPanics(t, func() { _ = (*ygws.PeerClose)(nil).Error() })
+}
+
+// An apply the hook started but that is still running when the hook returns
+// finishes before the peer is answered, so SyncStatus(1) never arrives ahead of
+// the room holding the update.
+func TestInteg_OnPeerUpdate_AnswerWaitsForAnApplyStillRunning(t *testing.T) {
+	var released atomic.Bool
+	srv, ts := hocuspocusServer(t, func(srv *ygws.Server) {
+		srv.OnPeerUpdate = func(info ygws.PeerUpdateInfo, apply func() error) error {
+			started := make(chan struct{})
+			var once sync.Once
+			info.Doc.OnUpdate(func([]byte, any) {
+				once.Do(func() {
+					close(started)
+					time.Sleep(50 * time.Millisecond)
+					released.Store(true)
+				})
+			})
+			go func() { _ = apply() }()
+			<-started
+			return nil
+		}
+	})
+	editorDoc := crdt.New(crdt.WithClientID(7))
+	editor := hpDial(t, ts, "room", false, editorDoc)
+
+	hpSend(t, editor, "room", tagSync, ygsync.EncodeUpdate(textUpdate(editorDoc, "slow")))
+	assert.Equal(t, []uint64{1}, syncStatuses(t, editor, "room"))
+	assert.True(t, released.Load(), "the peer was answered before its apply finished")
+	assert.Equal(t, "slow", srv.GetDoc("room").GetText("t").ToString())
 }

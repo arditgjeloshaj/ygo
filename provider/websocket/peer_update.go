@@ -32,7 +32,8 @@ type PeerUpdateInfo struct {
 // call after it returns applies nothing and returns ErrPeerUpdateHookReturned,
 // since by then the peer has been answered and the update would reach no other
 // peer. The hook runs on the peer's read loop, so the peer's next frame waits
-// for it.
+// for it. apply takes the document's write lock, so calling it inside
+// info.Doc.Transact deadlocks the room.
 //
 // A hook that refuses the update — returns without apply having applied it,
 // or panics before that — closes the peer: with the code and reason of a
@@ -74,6 +75,9 @@ type PeerClose struct {
 }
 
 func (c *PeerClose) Error() string {
+	if c == nil {
+		return "ygo/websocket: close peer: <nil>"
+	}
 	return fmt.Sprintf("ygo/websocket: close peer with %d: %s", c.Code, c.Reason)
 }
 
