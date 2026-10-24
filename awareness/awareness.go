@@ -373,6 +373,15 @@ func (a *Awareness) GetStates() map[uint64]ClientState {
 	return out
 }
 
+// HasLiveState reports whether clientID currently holds active state, as
+// opposed to being unknown or a removal tombstone.
+func (a *Awareness) HasLiveState(clientID uint64) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	cs, ok := a.states[clientID]
+	return ok && cs.State != nil
+}
+
 // Meta returns the clock and last-updated time for a known client, including
 // remote tombstones (Yjs/yrs retain meta for removed clients). LastUpdated is
 // the last-applied time for an active client, or the tombstone time for a

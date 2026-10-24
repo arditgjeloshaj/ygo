@@ -205,6 +205,26 @@ const (
 // builds the removal slice (N-H4).
 const maxAwarenessClientsPerPeer = 10_000
 
+// defaultMaxAwarenessClientsPerConn is the per-connection introduction cap used
+// when MaxAwarenessClientsPerConn is unset. A browser tab speaks for one client
+// ID; 64 leaves room for reconnect churn and multi-document clients while still
+// containing a flood.
+const defaultMaxAwarenessClientsPerConn = 64
+
+// maxAwarenessEntriesPerFrame mirrors the awareness package's own per-update
+// entry ceiling, so the admission gate rejects a frame the apply would refuse
+// anyway instead of first materialising its entries.
+const maxAwarenessEntriesPerFrame = 100_000
+
+// maxAwarenessClientsPerConn returns the configured per-connection
+// introduction cap or the default. Negative disables the gate.
+func (s *Server) maxAwarenessClientsPerConn() int {
+	if s.MaxAwarenessClientsPerConn == 0 {
+		return defaultMaxAwarenessClientsPerConn
+	}
+	return s.MaxAwarenessClientsPerConn
+}
+
 // defaultPeerWriteQueueSize is the default capacity of each peer's broadcast
 // write channel when PeerWriteQueueSize is not set. 512 gives transiently-slow
 // peers more slack before the queue overflows (matching the yrs shared broadcast
@@ -1255,6 +1275,24 @@ type Server struct {
 	// size this as a large fraction of MaxAwarenessClientsPerRoom, not a
 	// minority quota.
 	MaxForeignAwarenessClients int
+
+	// MaxAwarenessClientsPerConn caps how many awareness client IDs one
+	// connection may introduce to its room, containing a presence flood at the
+	// connection that sends it. A frame that would exceed the cap is rejected
+	// whole: it is neither applied nor relayed. Zero (the default) selects the
+	// built-in default of 64; a negative value disables the gate and restores
+	// the previous behaviour, including the 10,000-ID tracking ceiling that
+	// bounds the disconnect removal slice.
+	//
+	// Only IDs this connection introduced and that are still live count, so a
+	// y-protocols timeout-removal broadcast (all nulls) and a full-state echo
+	// (IDs the room already holds) are both free, while reviving an ID the
+	// connection removed spends a slot again. A connection speaking for one
+	// browser tab needs a single ID; a trusted bridge fanning many users
+	// through one socket needs as many as it carries. The escape hatch is
+	// server-wide, so an operator running such a bridge alongside untrusted
+	// browsers must raise the cap for everyone.
+	MaxAwarenessClientsPerConn int
 
 	// AwarenessExpiry, when > 0, starts a per-room background sweep that marks a
 	// remote client's presence as removed if no update for it arrives within this

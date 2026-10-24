@@ -108,7 +108,11 @@ func (p *peer) handleMessage(data []byte) {
 				"room", p.roomName, "err", err)
 			return
 		}
-		p.trackAwarenessClients(awBytes)
+		if !p.trackAwarenessClients(awBytes) {
+			p.server.log().Debug("discarded awareness frame past the per-connection client cap",
+				"room", p.roomName)
+			return
+		}
 		if err := p.room.awareness.ApplyUpdate(awBytes, p); err != nil {
 			// Drop invalid awareness updates; do not broadcast.
 			p.server.log().Debug("discarded unappliable awareness update",
@@ -458,33 +462,116 @@ func (p *peer) sendCloseFrame() {
 	_ = p.conn.Close()
 }
 
-// trackAwarenessClients records which awareness clientIDs this peer owns
-// so they can be removed when the peer disconnects.
-func (p *peer) trackAwarenessClients(payload []byte) {
+// awarenessEntry is one decoded entry of an awareness frame: the client it
+// speaks for, and whether it retires that client rather than asserting state.
+type awarenessEntry struct {
+	clientID uint64
+	removal  bool
+}
+
+// decodeAwarenessEntries reads a frame's entries in wire order. It mirrors
+// Awareness.applyUpdate's decode — same reads, same null test — so the gate
+// judges exactly the entries the apply would see. ok is false for a frame
+// neither will accept; the entries read before that point are still returned,
+// since the ungated path tracks them as it always has.
+func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, ok bool) {
 	dec := encoding.NewDecoder(payload)
 	n, err := dec.ReadVarUint()
-	if err != nil {
-		return
+	if err != nil || n > maxAwarenessEntriesPerFrame {
+		return nil, false
 	}
-	p.cidMu.Lock()
-	defer p.cidMu.Unlock()
+	entries = make([]awarenessEntry, 0, n)
 	for i := uint64(0); i < n; i++ {
 		clientID, err := dec.ReadVarUint()
 		if err != nil {
-			return
+			return entries, false
 		}
 		if _, err = dec.ReadVarUint(); err != nil { // clock
-			return
+			return entries, false
 		}
-		if _, err = dec.ReadVarString(); err != nil { // state JSON
-			return
+		state, err := dec.ReadVarBytes()
+		if err != nil {
+			return entries, false
 		}
-		// Cap the number of clientIDs a single peer may claim to prevent OOM
-		// when handleDisconnect builds the removal slice (N-H4).
-		if len(p.clientIDs) < maxAwarenessClientsPerPeer {
-			p.clientIDs[clientID] = struct{}{}
+		entries = append(entries, awarenessEntry{
+			clientID: clientID,
+			removal:  len(state) == 0 || string(state) == "null",
+		})
+	}
+	return entries, true
+}
+
+// trackAwarenessClients records which awareness clientIDs this peer owns, so
+// they can be removed when it disconnects, and reports whether the frame may
+// be applied. An ID counts against Server.MaxAwarenessClientsPerConn while this
+// peer asserts state the room did not already hold live for it; a frame that
+// would push the peer past that cap is rejected whole, so a presence flood is
+// contained at the connection that sends it.
+func (p *peer) trackAwarenessClients(payload []byte) bool {
+	entries, ok := decodeAwarenessEntries(payload)
+	limit := p.server.maxAwarenessClientsPerConn()
+	if limit < 0 {
+		// Gate disabled: track every ID claimed, up to the ceiling that bounds
+		// the removal slice handleDisconnect builds (N-H4).
+		p.cidMu.Lock()
+		defer p.cidMu.Unlock()
+		for _, e := range entries {
+			if len(p.clientIDs) < maxAwarenessClientsPerPeer {
+				p.clientIDs[e.clientID] = struct{}{}
+			}
+		}
+		return true
+	}
+	if !ok {
+		return false
+	}
+	return p.admitAwarenessEntries(entries, limit)
+}
+
+// admitAwarenessEntries applies a decoded frame to this peer's owned-ID set and
+// reports whether the frame fits its budget. The whole frame is judged before
+// the verdict, so a removal early in it frees a slot for an introduction later
+// in it, and a rejected frame leaves the set as it found it.
+//
+// Room liveness is resolved before cidMu is taken: HasLiveState takes the
+// awareness lock, and the two must never nest.
+func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
+	live := make(map[uint64]bool, len(entries))
+	for _, e := range entries {
+		if _, done := live[e.clientID]; e.removal || done {
+			continue
+		}
+		live[e.clientID] = p.room.awareness.HasLiveState(e.clientID)
+	}
+
+	p.cidMu.Lock()
+	defer p.cidMu.Unlock()
+	var introduced, dropped []uint64
+	for _, e := range entries {
+		_, owned := p.clientIDs[e.clientID]
+		switch {
+		case e.removal:
+			if owned {
+				delete(p.clientIDs, e.clientID)
+				dropped = append(dropped, e.clientID)
+			}
+		case owned || live[e.clientID]:
+			// Re-asserting a client the peer already speaks for, or one the room
+			// already holds, introduces nothing.
+		case len(p.clientIDs) >= limit:
+			for _, id := range introduced {
+				delete(p.clientIDs, id)
+			}
+			for _, id := range dropped {
+				p.clientIDs[id] = struct{}{}
+			}
+			return false
+		default:
+			p.clientIDs[e.clientID] = struct{}{}
+			introduced = append(introduced, e.clientID)
 		}
 	}
+	return true
 }
 
 // handleDisconnect removes the peer from the room and broadcasts awareness
