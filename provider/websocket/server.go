@@ -1282,7 +1282,9 @@ type Server struct {
 	// whole: it is neither applied nor relayed. Zero (the default) selects the
 	// built-in default of 64; a negative value disables the gate and restores
 	// the previous behaviour, including the 10,000-ID tracking ceiling that
-	// bounds the disconnect removal slice.
+	// bounds the disconnect removal slice. Note the inverted convention: unlike
+	// the caps above, which zero disables, this gate is on by default and only
+	// a negative value turns it off.
 	//
 	// Only IDs this connection introduced and that are still live count, so a
 	// y-protocols timeout-removal broadcast (all nulls) and a full-state echo

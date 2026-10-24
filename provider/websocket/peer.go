@@ -528,6 +528,32 @@ func (p *peer) trackAwarenessClients(payload []byte) bool {
 	return p.admitAwarenessEntries(entries, limit)
 }
 
+// ownershipUndo holds the pre-frame ownership of each ID a frame's walk
+// changed, so a rejected frame can be undone exactly whatever order it touched
+// them in.
+type ownershipUndo map[uint64]bool
+
+// record notes id's ownership the first time the walk changes it.
+func (u *ownershipUndo) record(id uint64, owned bool) {
+	if *u == nil {
+		*u = make(ownershipUndo, 4)
+	}
+	if _, seen := (*u)[id]; !seen {
+		(*u)[id] = owned
+	}
+}
+
+// restore puts every recorded ID back the way the frame found it.
+func (u ownershipUndo) restore(set map[uint64]struct{}) {
+	for id, owned := range u {
+		if owned {
+			set[id] = struct{}{}
+		} else {
+			delete(set, id)
+		}
+	}
+}
+
 // admitAwarenessEntries applies a decoded frame to this peer's owned-ID set and
 // reports whether the frame fits its budget. The whole frame is judged before
 // the verdict, so a removal early in it frees a slot for an introduction later
@@ -546,29 +572,27 @@ func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
 
 	p.cidMu.Lock()
 	defer p.cidMu.Unlock()
-	var introduced, dropped []uint64
+	var undo ownershipUndo
 	for _, e := range entries {
 		_, owned := p.clientIDs[e.clientID]
 		switch {
 		case e.removal:
+			// The frame retires the ID, so the room's liveness no longer covers a
+			// re-assertion later in the same frame: that is a fresh introduction.
+			live[e.clientID] = false
 			if owned {
+				undo.record(e.clientID, true)
 				delete(p.clientIDs, e.clientID)
-				dropped = append(dropped, e.clientID)
 			}
 		case owned || live[e.clientID]:
 			// Re-asserting a client the peer already speaks for, or one the room
 			// already holds, introduces nothing.
 		case len(p.clientIDs) >= limit:
-			for _, id := range introduced {
-				delete(p.clientIDs, id)
-			}
-			for _, id := range dropped {
-				p.clientIDs[id] = struct{}{}
-			}
+			undo.restore(p.clientIDs)
 			return false
 		default:
+			undo.record(e.clientID, false)
 			p.clientIDs[e.clientID] = struct{}{}
-			introduced = append(introduced, e.clientID)
 		}
 	}
 	return true

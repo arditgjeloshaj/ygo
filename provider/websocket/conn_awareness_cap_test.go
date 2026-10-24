@@ -244,6 +244,44 @@ func TestConnAwarenessCap_RemovalAndIntroductionInOneFrame(t *testing.T) {
 	require.False(t, roomAwarenessIDs(t, s, "room")[idA], "removed client is still live")
 }
 
+// Retiring an ID and re-asserting it inside one frame is a re-introduction, so
+// it keeps costing a slot: the room's liveness at the start of the frame does
+// not excuse an assertion the frame's own removal came before.
+func TestConnAwarenessCap_ReintroductionInOneFrameCountsAgain(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB = 101, 102
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 1)))
+	waitForLiveID(t, s, idA)
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 2), liveEntry(idA, 3)))
+	sendAwFrame(t, conn, awFrame(liveEntry(idB, 1)))
+
+	waitProcessed(t, s, conn, idA, 5)
+	require.False(t, roomAwarenessIDs(t, s, "room")[idB], "cap was not spent by the re-introduction")
+}
+
+// A rejected frame leaves the budget exactly as it found it, however it shuffled
+// ownership before hitting the cap.
+func TestConnAwarenessCap_RejectedFrameLeavesNoResidue(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	// Introduce X, retire it, then introduce Y and Z: the second introduction
+	// hits the cap and the whole frame is rejected.
+	const idX, idY, idZ, idW = 101, 102, 103, 104
+	sendAwFrame(t, conn, awFrame(
+		liveEntry(idX, 1), nullEntry(idX, 2), liveEntry(idY, 1), liveEntry(idZ, 1)))
+
+	sendAwFrame(t, conn, awFrame(liveEntry(idW, 1)))
+	waitForLiveID(t, s, idW)
+
+	ids := roomAwarenessIDs(t, s, "room")
+	for _, id := range []uint64{idX, idY, idZ} {
+		require.False(t, ids[id], "rejected frame put client %d in the room", id)
+	}
+}
+
 // A truncated frame is dropped without panicking, spends no budget, and leaves
 // the connection usable. Cap 1: the entry decoded before the truncation must
 // not take the slot the following valid frame needs.
