@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holding the room. A frame that would take a connection past the cap is now
   dropped whole, not applied and not broadcast (debug logged). Only IDs the
   connection introduces that are not live in the room count, and an ID stops
-  counting once it is removed, so a y-protocols timeout-removal broadcast and a
+  counting once the connection removes it (or disconnects), so a y-protocols timeout-removal broadcast and a
   full-state echo cost nothing and a room of any size is unaffected. `0` (the
   default) selects 64, a negative value disables the gate, and a positive value
   is used as given. This inverts the `0 = unlimited` convention of the
@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`provider/websocket`: `Server.MaxForeignAwarenessClients` reserves part of a
   room's presence budget for local clients.** Once the room holds this many
   live awareness entries, presence relayed from another node is refused for a
-  new client ID; a client already tracked keeps updating. `0` (the default)
+  client ID that is not currently live (new, or removed and returning); a live
+  client keeps updating. `0` (the default)
   disables it. A positive value is clamped to `MaxAwarenessClientsPerRoom` when
   that is bounded, and is honoured when it is not. Size it as a large fraction
   of `MaxAwarenessClientsPerRoom`, because in an N-node cluster relayed

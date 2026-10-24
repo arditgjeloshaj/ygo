@@ -143,7 +143,8 @@ too.
   positive value is used as given. This inverts the `0 = unlimited` convention
   of `MaxAwarenessBytesPerRoom` and `MaxAwarenessClientsPerRoom`.
 - Only IDs the connection introduces that are not live in the room count, and
-  an ID stops counting once it is removed. A browser tab introduces one. The
+  an ID stops counting once the connection removes it (or disconnects). A
+  browser tab introduces one. The
   timeout-removal broadcasts y-protocols clients send (nulls that name other
   clients' IDs) and full-state echoes (IDs the room already holds live) cost
   nothing, so the cap is not a limit on room size: a room of any size works.
@@ -153,14 +154,16 @@ too.
 
 **Relayed presence (opt-in).** `Server.MaxForeignAwarenessClients` reserves part
 of a room's presence budget for local clients by refusing relayed presence for
-a new client ID once the room holds this many live entries. `0` (the default)
+a client ID that is not currently live (new, or removed and returning) once the
+room holds this many live entries. `0` (the default)
 disables it and relayed presence shares the whole room budget, as before. A
 positive value is clamped to `MaxAwarenessClientsPerRoom` when that is bounded,
 and is honoured when it is not. The relay applies a `KindAwareness` payload
 through `Awareness.ApplyUpdateForeign`; a refused entry is skipped silently, not
 returned as an error, so `Inject` does not report a routine refusal to the relay
-as a delivery failure. A client already tracked keeps updating, and can be
-removed, after the sub-cap is reached. `Awareness.SetMaxForeignClients` sets
+as a delivery failure. A client that is live keeps updating, and can be removed,
+after the sub-cap is reached; one that left and returns is refused like a new
+one. `Awareness.SetMaxForeignClients` sets
 the same bound on a standalone `Awareness`.
 
 Size it as a **large fraction of `MaxAwarenessClientsPerRoom`**. Reserving
@@ -172,7 +175,8 @@ setting it as a fraction of the room cap is what makes that reservation hold.
   sized like a minority quota shuts out most of the room.
 - `Inject` creates a room with no local peers when it is not resident, and all
   presence in it is relayed. There the sub-cap is that node's entire presence
-  ceiling for the room, where without it presence is unlimited.
+  ceiling for the room. Without it the ceiling is `MaxAwarenessClientsPerRoom`,
+  or none when that is unset.
 - The threshold counts all live entries, local and relayed, not relayed ones
   alone. Once local clients fill the room, relayed presence is shut out sooner
   than a true per-origin quota would shut it out.

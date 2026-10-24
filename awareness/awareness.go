@@ -219,9 +219,9 @@ func (a *Awareness) SetMaxClients(n int) {
 
 // SetMaxForeignClients bounds the live remote entries that ApplyUpdateForeign
 // will admit, so relayed presence cannot crowd out local clients under
-// SetMaxClients. Once reached, ApplyUpdateForeign refuses previously-unseen
-// client IDs; tracked clients still update and can be removed. It does not
-// restrict ApplyUpdate.
+// SetMaxClients. Once reached, ApplyUpdateForeign refuses client IDs that are
+// not currently live, whether new or removed and returning; live clients still
+// update and can be removed. It does not restrict ApplyUpdate.
 //
 // Unlike SetMaxClients it counts live entries only, not removal tombstones:
 // tombstones are reclaimed only while StartAutoExpiry runs, so counting them

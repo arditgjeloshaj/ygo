@@ -16,7 +16,7 @@ the previous behaviour, and a positive value is used as given. This inverts the
 
 The cap is not a limit on room size. Only client IDs the connection introduces
 that are not live in the room count against it, and an ID stops counting once
-it is removed. A browser tab introduces one. The timeout-removal broadcasts
+the connection removes it (or disconnects). A browser tab introduces one. The timeout-removal broadcasts
 y-protocols clients send, which name other clients' IDs as nulls, and the
 full-state echoes they send, which re-assert IDs the room already holds, cost
 nothing. An embedder that fans many users through one connection introduces as
@@ -28,8 +28,9 @@ untrusted browsers raises it for all of them.
 crowding out local clients.** Opt-in; nothing changes unless you set it.
 
 `Server.MaxForeignAwarenessClients` refuses presence relayed from another node,
-for a client ID the room does not already track, once the room holds this many
-live awareness entries. A client already tracked keeps updating. `0`, the
+for a client ID that is not currently live (new, or removed and returning), once
+the room holds this many live awareness entries. A client that is live keeps
+updating. `0`, the
 default, disables it. A positive value is clamped to `MaxAwarenessClientsPerRoom`
 when that is bounded, and is honoured when it is not.
 
@@ -42,7 +43,8 @@ Sizing needs care, because a number that looks safe shuts out most of a room:
   like a minority quota shuts out most of the room.
 - `Inject` creates a room with no local peers when it is not resident, and all
   presence in it is relayed. There the sub-cap is that node's entire presence
-  ceiling for the room, where without it presence is unlimited.
+  ceiling for the room. Without it the ceiling is `MaxAwarenessClientsPerRoom`,
+  or none when that is unset.
 - The threshold counts all live entries, local and relayed, so once local
   clients fill the room, relayed presence is shut out sooner than a true
   per-origin quota would shut it out.
