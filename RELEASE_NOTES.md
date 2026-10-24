@@ -16,13 +16,21 @@ the previous behaviour, and a positive value is used as given. This inverts the
 
 The cap is not a limit on room size. Only client IDs the connection introduces
 that are not live in the room count against it, and an ID stops counting once
-the connection removes it (or disconnects). A browser tab introduces one. The timeout-removal broadcasts
-y-protocols clients send, which name other clients' IDs as nulls, and the
-full-state echoes they send, which re-assert IDs the room already holds, cost
-nothing. An embedder that fans many users through one connection introduces as
-many IDs as it carries, so it must raise the cap or disable it. The setting is
-server-wide: there is no per-connection override, so a trusted bridge beside
-untrusted browsers raises it for all of them.
+the connection removes it (or disconnects). A browser tab introduces one. The
+timeout-removal broadcasts y-protocols clients send, which name other clients'
+IDs as nulls, and the full-state echoes they send, which re-assert IDs the room
+already holds, cost nothing. An embedder that fans many users through one
+connection introduces as many IDs as it carries, so it must raise the cap or
+disable it. The setting is server-wide: there is no per-connection override, so
+a trusted bridge beside untrusted browsers raises it for all of them.
+
+Disconnect behaviour narrows to match. A connection's departure now removes the
+awareness IDs it introduced and still holds, where before it removed every ID
+the connection had ever named in a frame. Presence a connection only
+re-asserted — an ID another connection or the relay introduced — stays with
+whoever introduced it, and outlives the re-asserting connection until that
+owner leaves, `AwarenessExpiry` sweeps it, or the room is evicted. Set
+`AwarenessExpiry` if your clients take over each other's IDs.
 
 **Who is affected: clustered servers that want to keep relayed presence from
 crowding out local clients.** Opt-in; nothing changes unless you set it.
@@ -30,9 +38,9 @@ crowding out local clients.** Opt-in; nothing changes unless you set it.
 `Server.MaxForeignAwarenessClients` refuses presence relayed from another node,
 for a client ID that is not currently live (new, or removed and returning), once
 the room holds this many live awareness entries. A client that is live keeps
-updating. `0`, the
-default, disables it. A positive value is clamped to `MaxAwarenessClientsPerRoom`
-when that is bounded, and is honoured when it is not.
+updating. `0`, the default, disables it. A positive value is clamped to
+`MaxAwarenessClientsPerRoom` when that is bounded, and is honoured when it is
+not.
 
 Sizing needs care, because a number that looks safe shuts out most of a room:
 
@@ -55,9 +63,9 @@ refusal as a delivery failure.
 New exported API in `awareness`: `Awareness.ApplyUpdateForeign` and
 `Awareness.SetMaxForeignClients`, which the relay and the server use for the
 sub-cap (it counts live entries only, not removal tombstones, which are
-reclaimed only while `AwarenessExpiry` is set), and `Awareness.ClientView`, which
-returns a client's clock, whether it is known, and whether it is live in one
-read-locked lookup. `docs/CLUSTERING.md` covers both settings.
+reclaimed only while `AwarenessExpiry` is set), and `Awareness.ClientView`,
+which returns a client's clock, whether it is known, and whether it is live in
+one read-locked lookup. `docs/CLUSTERING.md` covers both settings.
 
 ## v1.54.0
 

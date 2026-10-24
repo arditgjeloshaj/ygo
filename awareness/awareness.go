@@ -223,6 +223,11 @@ func (a *Awareness) SetMaxClients(n int) {
 // not currently live, whether new or removed and returning; live clients still
 // update and can be removed. It does not restrict ApplyUpdate.
 //
+// n is a threshold on ALL live entries, not a quota for relayed ones: entries
+// admitted through ApplyUpdate count toward it too, so local presence filling
+// the room shuts relayed presence out sooner than a true per-origin quota
+// would.
+//
 // Unlike SetMaxClients it counts live entries only, not removal tombstones:
 // tombstones are reclaimed only while StartAutoExpiry runs, so counting them
 // would let ordinary churn saturate the sub-cap permanently.

@@ -3,12 +3,14 @@ package websocket
 import (
 	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 
+	"github.com/reearth/ygo/awareness"
 	"github.com/reearth/ygo/encoding"
 )
 
@@ -61,6 +63,7 @@ func seedRoomPresence(t *testing.T, s *Server, n uint64) []awEntry {
 	t.Helper()
 	rm, _, err := s.getOrCreateRoom(context.Background(), "room")
 	require.NoError(t, err)
+	defer s.releaseInflight(rm)
 	seeded := make([]awEntry, 0, n)
 	for id := uint64(1); id <= n; id++ {
 		seeded = append(seeded, liveEntry(id, 1))
@@ -76,6 +79,7 @@ func tombstoneRoomPresence(t *testing.T, s *Server, entries []awEntry) {
 	t.Helper()
 	rm, _, err := s.getOrCreateRoom(context.Background(), "room")
 	require.NoError(t, err)
+	defer s.releaseInflight(rm)
 	nulls := make([]awEntry, 0, len(entries))
 	for _, e := range entries {
 		nulls = append(nulls, nullEntry(e.id, e.clock+1))
@@ -103,6 +107,7 @@ func waitProcessed(t *testing.T, s *Server, conn *gws.Conn, id, clock uint64) {
 	sendAwFrame(t, conn, awFrame(liveEntry(id, clock)))
 	rm, _, err := s.getOrCreateRoom(context.Background(), "room")
 	require.NoError(t, err)
+	defer s.releaseInflight(rm)
 	require.Eventually(t, func() bool {
 		m, ok := rm.awareness.Meta(id)
 		return ok && m.Clock == clock
@@ -345,6 +350,7 @@ func TestConnAwarenessCap_ExpiredClientFreesItsSlot(t *testing.T) {
 	// Expiry tombstones at the unchanged clock, exactly as the sweeper does.
 	rm, _, err := s.getOrCreateRoom(context.Background(), "room")
 	require.NoError(t, err)
+	defer s.releaseInflight(rm)
 	rm.awareness.RemoveExpired(0)
 	require.False(t, roomAwarenessIDs(t, s, "room")[idA])
 
@@ -392,6 +398,95 @@ func TestConnAwarenessCap_RejectedFrameLeavesNoResidue(t *testing.T) {
 	for _, id := range []uint64{idX, idY, idZ} {
 		require.False(t, ids[id], "rejected frame put client %d in the room", id)
 	}
+}
+
+// A frame carrying an oversized state fails at the applier wholesale, so the
+// gate must refuse it too: admitting it would release the slots of the clients
+// it retires while leaving them live in the room, which is the cap undone one
+// megabyte at a time.
+func TestConnAwarenessCap_OversizedStateFrameFreesNoSlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 3)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB, idX, idC, idD = 101, 102, 103, 104, 105
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 1), liveEntry(idB, 1), liveEntry(idX, 1)))
+	waitForLiveID(t, s, idX)
+
+	// Retire two of the three, with an oversized state for the third. The
+	// applier refuses the frame outright, so A and B stay live and the
+	// connection still speaks for all three.
+	oversized := awEntry{id: idX, clock: 2, state: `"` + strings.Repeat("x", 1<<20) + `"`}
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 2), nullEntry(idB, 2), oversized))
+
+	sendAwFrame(t, conn, awFrame(liveEntry(idC, 1), liveEntry(idD, 1)))
+
+	waitProcessed(t, s, conn, idX, 9)
+	ids := roomAwarenessIDs(t, s, "room")
+	require.True(t, ids[idA], "the refused frame was applied after all")
+	require.True(t, ids[idB], "the refused frame was applied after all")
+	require.False(t, ids[idC], "a frame the applier refuses freed a slot")
+	require.False(t, ids[idD], "a frame the applier refuses freed a slot")
+}
+
+// The gate's frame limits must stay exactly the applier's, so no frame can pass
+// the gate and then fail the apply wholesale. The applier itself is the oracle:
+// if the awareness package moves a ceiling, this fails.
+func TestConnAwarenessCap_FrameLimitsMatchTheApplier(t *testing.T) {
+	bigState := func(n int) string { return `"` + strings.Repeat("x", n-2) + `"` }
+	manyEntries := func(n int) []awEntry {
+		out := make([]awEntry, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, liveEntry(uint64(i+1), 1))
+		}
+		return out
+	}
+
+	cases := []struct {
+		name    string
+		payload []byte
+		refused bool
+	}{
+		{"state at the limit", awFrame(awEntry{1, 1, bigState(maxAwarenessStateBytesPerEntry)}), false},
+		{"state past the limit", awFrame(awEntry{1, 1, bigState(maxAwarenessStateBytesPerEntry + 1)}), true},
+		{"entries at the limit", awFrame(manyEntries(maxAwarenessEntriesPerFrame)...), false},
+		{"entries past the limit", awFrame(manyEntries(maxAwarenessEntriesPerFrame + 1)...), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			applyErr := awareness.New(0).ApplyUpdate(c.payload, nil)
+			_, gateErr := decodeAwarenessEntries(c.payload)
+			require.Equal(t, c.refused, applyErr != nil, "applier disagrees with the case")
+			require.Equal(t, applyErr != nil, gateErr != nil,
+				"gate and applier disagree: apply=%v gate=%v", applyErr, gateErr)
+		})
+	}
+}
+
+// The gate is on by default: an unset cap is 64, not unlimited and not zero.
+func TestConnAwarenessCap_DefaultIsSixtyFour(t *testing.T) {
+	require.Equal(t, 64, NewServer().maxAwarenessClientsPerConn())
+}
+
+// End to end on a default-configured server: 64 introductions are admitted and
+// the 65th is refused.
+func TestConnAwarenessCap_DefaultAdmitsSixtyFourIntroductions(t *testing.T) {
+	s := NewServer()
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+	conn := dialRoomInternal(t, ts, "room")
+
+	within := make([]awEntry, 0, 64)
+	for id := uint64(1); id <= 64; id++ {
+		within = append(within, liveEntry(id, 1))
+	}
+	sendAwFrame(t, conn, awFrame(within...))
+	waitForLiveID(t, s, 64)
+
+	const oneTooMany = 65
+	sendAwFrame(t, conn, awFrame(liveEntry(oneTooMany, 1)))
+	waitProcessed(t, s, conn, 1, 9)
+	require.False(t, roomAwarenessIDs(t, s, "room")[oneTooMany], "the 65th introduction was admitted")
 }
 
 // A truncated frame is dropped without panicking, spends no budget, and leaves

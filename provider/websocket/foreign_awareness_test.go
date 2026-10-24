@@ -39,6 +39,7 @@ func roomAwarenessIDs(t *testing.T, s *Server, room string) map[uint64]bool {
 	t.Helper()
 	rm, _, err := s.getOrCreateRoom(context.Background(), room)
 	require.NoError(t, err)
+	defer s.releaseInflight(rm)
 	ids := map[uint64]bool{}
 	for id := range rm.awareness.GetStates() {
 		ids[id] = true

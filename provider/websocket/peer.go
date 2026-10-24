@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -108,9 +109,9 @@ func (p *peer) handleMessage(data []byte) {
 				"room", p.roomName, "err", err)
 			return
 		}
-		if !p.trackAwarenessClients(awBytes) {
-			p.server.log().Debug("discarded awareness frame past the per-connection client cap",
-				"room", p.roomName)
+		if err := p.trackAwarenessClients(awBytes); err != nil {
+			p.server.log().Debug("discarded awareness frame at the admission gate",
+				"room", p.roomName, "reason", err)
 			return
 		}
 		if err := p.room.awareness.ApplyUpdate(awBytes, p); err != nil {
@@ -471,30 +472,47 @@ type awarenessEntry struct {
 	removal  bool
 }
 
+// Reasons an awareness frame is refused before it reaches the room. The first
+// three are frames Awareness.ApplyUpdate would refuse wholesale; the gate must
+// refuse exactly those too, or it would release slots for removals the room
+// never applies.
+var (
+	errAwarenessTruncated     = errors.New("truncated awareness frame")
+	errAwarenessTooManyClient = errors.New("awareness frame exceeds the maximum client count")
+	errAwarenessStateTooLarge = errors.New("awareness client state exceeds the maximum size")
+	errAwarenessConnCap       = errors.New("connection exceeds its awareness client cap")
+)
+
 // decodeAwarenessEntries reads a frame's entries in wire order. It mirrors
-// Awareness.applyUpdate's decode — same reads, same null test — so the gate
-// judges exactly the entries the apply would see. ok is false for a frame
-// neither will accept; the entries read before that point are still returned,
-// since the ungated path tracks them as it always has.
-func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, ok bool) {
+// Awareness.applyUpdate's decode — same reads, same limits, same null test —
+// so the gate judges exactly the entries the apply would see. On error the
+// entries read before that point are still returned, since the ungated path
+// tracks them as it always has.
+func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, err error) {
 	dec := encoding.NewDecoder(payload)
 	n, err := dec.ReadVarUint()
-	if err != nil || n > maxAwarenessEntriesPerFrame {
-		return nil, false
+	if err != nil {
+		return nil, errAwarenessTruncated
+	}
+	if n > maxAwarenessEntriesPerFrame {
+		return nil, errAwarenessTooManyClient
 	}
 	entries = make([]awarenessEntry, 0, n)
 	for i := uint64(0); i < n; i++ {
 		clientID, err := dec.ReadVarUint()
 		if err != nil {
-			return entries, false
+			return entries, errAwarenessTruncated
 		}
 		clock, err := dec.ReadVarUint()
 		if err != nil {
-			return entries, false
+			return entries, errAwarenessTruncated
 		}
 		state, err := dec.ReadVarBytes()
 		if err != nil {
-			return entries, false
+			return entries, errAwarenessTruncated
+		}
+		if len(state) > maxAwarenessStateBytesPerEntry {
+			return entries, errAwarenessStateTooLarge
 		}
 		entries = append(entries, awarenessEntry{
 			clientID: clientID,
@@ -502,17 +520,18 @@ func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, ok bool) 
 			removal:  len(state) == 0 || string(state) == "null",
 		})
 	}
-	return entries, true
+	return entries, nil
 }
 
 // trackAwarenessClients records which awareness clientIDs this peer owns, so
 // they can be removed when it disconnects, and reports whether the frame may
-// be applied. An ID counts against Server.MaxAwarenessClientsPerConn while this
-// peer asserts state the room did not already hold live for it; a frame that
-// would push the peer past that cap is rejected whole, so a presence flood is
-// contained at the connection that sends it.
-func (p *peer) trackAwarenessClients(payload []byte) bool {
-	entries, ok := decodeAwarenessEntries(payload)
+// be applied — nil to apply it, otherwise why it is refused. An ID counts
+// against Server.MaxAwarenessClientsPerConn while this peer asserts state the
+// room did not already hold live for it; a frame that would push the peer past
+// that cap is rejected whole, so a presence flood is contained at the
+// connection that sends it.
+func (p *peer) trackAwarenessClients(payload []byte) error {
+	entries, err := decodeAwarenessEntries(payload)
 	limit := p.server.maxAwarenessClientsPerConn()
 	if limit < 0 {
 		// Gate disabled: track every ID claimed, up to the ceiling that bounds
@@ -524,12 +543,15 @@ func (p *peer) trackAwarenessClients(payload []byte) bool {
 				p.clientIDs[e.clientID] = struct{}{}
 			}
 		}
-		return true
+		return nil
 	}
-	if !ok {
-		return false
+	if err != nil {
+		return err
 	}
-	return p.admitAwarenessEntries(entries, limit)
+	if !p.admitAwarenessEntries(entries, limit) {
+		return errAwarenessConnCap
+	}
+	return nil
 }
 
 // ownershipUndo holds the pre-frame ownership of each ID a frame's walk
@@ -587,9 +609,10 @@ func (v roomView) honours(e awarenessEntry, localID uint64) bool {
 // in it, and a rejected frame leaves the set as it found it.
 //
 // An entry the applier will discard changes neither the room nor the budget,
-// so the walk skips it. That matters for removals above all: a slot freed for
-// a null the applier throws away would leave the ID live in the room and owned
-// by nobody, which is the whole cap bypassed one stale null at a time.
+// so the walk skips it — with one deliberate exception for removals, below.
+// That matters for removals above all: a slot freed for a null the applier
+// throws away would leave the ID live in the room and owned by nobody, which
+// is the whole cap bypassed one stale null at a time.
 //
 // The room is read before cidMu is taken: ClientView takes the awareness lock,
 // and the two must never nest.

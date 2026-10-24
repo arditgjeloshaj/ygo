@@ -16,12 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holding the room. A frame that would take a connection past the cap is now
   dropped whole, not applied and not broadcast (debug logged). Only IDs the
   connection introduces that are not live in the room count, and an ID stops
-  counting once the connection removes it (or disconnects), so a y-protocols timeout-removal broadcast and a
-  full-state echo cost nothing and a room of any size is unaffected. `0` (the
-  default) selects 64, a negative value disables the gate, and a positive value
-  is used as given. This inverts the `0 = unlimited` convention of the
-  neighbouring `Max*` fields. The cap is server-wide; there is no
-  per-connection override.
+  counting once the connection removes it (or disconnects), so a y-protocols
+  timeout-removal broadcast and a full-state echo cost nothing and a room of
+  any size is unaffected. `0` (the default) selects 64, a negative value
+  disables the gate, and a positive value is used as given. This inverts the
+  `0 = unlimited` convention of the neighbouring `Max*` fields. The cap is
+  server-wide; there is no per-connection override. Disconnect behaviour
+  narrows with it: a connection's departure now removes the IDs it introduced
+  and still holds, not every ID it ever named in a frame.
 - **`provider/websocket`: `Server.MaxForeignAwarenessClients` reserves part of a
   room's presence budget for local clients.** Once the room holds this many
   live awareness entries, presence relayed from another node is refused for a

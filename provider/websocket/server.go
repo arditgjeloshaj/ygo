@@ -211,10 +211,16 @@ const maxAwarenessClientsPerPeer = 10_000
 // containing a flood.
 const defaultMaxAwarenessClientsPerConn = 64
 
-// maxAwarenessEntriesPerFrame mirrors the awareness package's own per-update
-// entry ceiling, so the admission gate rejects a frame the apply would refuse
-// anyway instead of first materialising its entries.
-const maxAwarenessEntriesPerFrame = 100_000
+// maxAwarenessEntriesPerFrame and maxAwarenessStateBytesPerEntry mirror the
+// awareness package's own per-update ceilings. The admission gate must refuse
+// every frame the apply refuses wholesale: a frame it lets through but the
+// apply then rejects would have freed the sender's slots while leaving the
+// clients it retired live in the room. TestConnAwarenessCap_FrameLimitsMatch
+// pins both against the applier itself.
+const (
+	maxAwarenessEntriesPerFrame    = 100_000
+	maxAwarenessStateBytesPerEntry = 1 << 20
+)
 
 // maxAwarenessClientsPerConn returns the configured per-connection
 // introduction cap or the default. Negative disables the gate.
@@ -1294,6 +1300,12 @@ type Server struct {
 	// through one socket needs as many as it carries. The escape hatch is
 	// server-wide, so an operator running such a bridge alongside untrusted
 	// browsers must raise the cap for everyone.
+	//
+	// Disconnect behaviour narrows with the gate on: a connection's departure
+	// removes the IDs it introduced and still holds, not every ID it ever
+	// named. Presence it only re-asserted — an ID another connection or the
+	// relay introduced — belongs to whoever introduced it and stays until that
+	// owner leaves, AwarenessExpiry sweeps it, or the room is evicted.
 	MaxAwarenessClientsPerConn int
 
 	// AwarenessExpiry, when > 0, starts a per-room background sweep that marks a
