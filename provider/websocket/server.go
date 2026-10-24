@@ -1242,6 +1242,18 @@ type Server struct {
 	// default) disables the cap. Suggested production value: 10,000.
 	MaxAwarenessClientsPerRoom int
 
+	// MaxForeignAwarenessClients caps the live awareness entries admitted into
+	// one room from presence injected over the cluster relay, so a presence
+	// flood on one node cannot take the room budget from clients connected to
+	// this one. It does not apply to presence from local peers. Zero (the
+	// default) disables the sub-cap and relayed presence shares the whole room
+	// budget. A value above a non-zero MaxAwarenessClientsPerRoom is clamped to
+	// it, and the sub-cap is honoured when that room cap is unlimited. In an
+	// N-node cluster legitimate foreign presence is about (N-1)/N of a room, so
+	// size this as a large fraction of MaxAwarenessClientsPerRoom, not a
+	// minority quota.
+	MaxForeignAwarenessClients int
+
 	// AwarenessExpiry, when > 0, starts a per-room background sweep that marks a
 	// remote client's presence as removed if no update for it arrives within this
 	// duration. It reclaims "ghost" presence from peers that died silently
@@ -1743,6 +1755,12 @@ func (s *Server) createRoomPlaceholder(name string) (*room, bool, error) {
 	}
 	if s.MaxAwarenessClientsPerRoom > 0 {
 		aw.SetMaxClients(s.MaxAwarenessClientsPerRoom)
+	}
+	if foreign := s.MaxForeignAwarenessClients; foreign > 0 {
+		if roomCap := s.MaxAwarenessClientsPerRoom; roomCap > 0 && foreign > roomCap {
+			foreign = roomCap
+		}
+		aw.SetMaxForeignClients(foreign)
 	}
 	if s.AwarenessExpiry > 0 {
 		// Background sweep; stopped via aw.Destroy() when the room is evicted, or
