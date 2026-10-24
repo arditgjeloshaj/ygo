@@ -1,3 +1,62 @@
+## v1.55.0
+
+**Who is affected: servers that bridge many awareness clients over a single
+websocket connection.** Everyone else sees no change.
+
+`Server.MaxAwarenessClientsPerConn` is new and on by default. A client can claim
+any awareness client ID, so one connection could fill a room's presence budget
+and, with a relay attached, have the fabricated IDs fanned to every node that
+holds the room. A frame that would take a connection past the cap is now dropped
+whole: it is not applied, not broadcast, and is logged at debug.
+
+`0`, the default, selects 64. A negative value disables the gate and restores
+the previous behaviour, and a positive value is used as given. This inverts the
+`0 = unlimited` convention of `MaxAwarenessBytesPerRoom` and
+`MaxAwarenessClientsPerRoom`.
+
+The cap is not a limit on room size. Only client IDs the connection introduces
+that are not live in the room count against it, and an ID stops counting once
+it is removed. A browser tab introduces one. The timeout-removal broadcasts
+y-protocols clients send, which name other clients' IDs as nulls, and the
+full-state echoes they send, which re-assert IDs the room already holds, cost
+nothing. An embedder that fans many users through one connection introduces as
+many IDs as it carries, so it must raise the cap or disable it. The setting is
+server-wide: there is no per-connection override, so a trusted bridge beside
+untrusted browsers raises it for all of them.
+
+**Who is affected: clustered servers that want to keep relayed presence from
+crowding out local clients.** Opt-in; nothing changes unless you set it.
+
+`Server.MaxForeignAwarenessClients` refuses presence relayed from another node,
+for a client ID the room does not already track, once the room holds this many
+live awareness entries. A client already tracked keeps updating. `0`, the
+default, disables it. A positive value is clamped to `MaxAwarenessClientsPerRoom`
+when that is bounded, and is honoured when it is not.
+
+Sizing needs care, because a number that looks safe shuts out most of a room:
+
+- Set it as a large fraction of `MaxAwarenessClientsPerRoom`. Reserving
+  roughly 1/8 of the cap for local clients is a reasonable starting point.
+- In an N-node cluster, relayed presence is legitimately about (N-1)/N of a
+  room's users, so the reservation you want is the small side. A sub-cap sized
+  like a minority quota shuts out most of the room.
+- `Inject` creates a room with no local peers when it is not resident, and all
+  presence in it is relayed. There the sub-cap is that node's entire presence
+  ceiling for the room, where without it presence is unlimited.
+- The threshold counts all live entries, local and relayed, so once local
+  clients fill the room, relayed presence is shut out sooner than a true
+  per-origin quota would shut it out.
+
+A refused entry is skipped without an error, so the relay does not see a routine
+refusal as a delivery failure.
+
+New exported API in `awareness`: `Awareness.ApplyUpdateForeign` and
+`Awareness.SetMaxForeignClients`, which the relay and the server use for the
+sub-cap (it counts live entries only, not removal tombstones, which are
+reclaimed only while `AwarenessExpiry` is set), and `Awareness.ClientView`, which
+returns a client's clock, whether it is known, and whether it is live in one
+read-locked lookup. `docs/CLUSTERING.md` covers both settings.
+
 ## v1.54.0
 
 **Who is affected: anyone who applies updates from peers they do not fully
