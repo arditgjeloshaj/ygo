@@ -591,8 +591,8 @@ func (v roomView) honours(e awarenessEntry, localID uint64) bool {
 // a null the applier throws away would leave the ID live in the room and owned
 // by nobody, which is the whole cap bypassed one stale null at a time.
 //
-// The room is read before cidMu is taken: Meta and HasLiveState take the
-// awareness lock, and the two must never nest.
+// The room is read before cidMu is taken: ClientView takes the awareness lock,
+// and the two must never nest.
 func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
 	localID := p.room.awareness.ClientID()
 	view := make(map[uint64]roomView, len(entries))
@@ -600,12 +600,8 @@ func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
 		if _, done := view[e.clientID]; done {
 			continue
 		}
-		m, known := p.room.awareness.Meta(e.clientID)
-		view[e.clientID] = roomView{
-			known: known,
-			clock: m.Clock,
-			live:  p.room.awareness.HasLiveState(e.clientID),
-		}
+		clock, known, live := p.room.awareness.ClientView(e.clientID)
+		view[e.clientID] = roomView{known: known, clock: clock, live: live}
 	}
 
 	p.cidMu.Lock()
@@ -613,16 +609,24 @@ func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
 	var undo ownershipUndo
 	for _, e := range entries {
 		v := view[e.clientID]
-		if !v.honours(e, localID) {
-			continue
-		}
+		honoured := v.honours(e, localID)
 		_, owned := p.clientIDs[e.clientID]
 		switch {
 		case e.removal:
+			// A slot is also released for an ID that is not live, even when the
+			// applier discards the null: holding one for a dead client can never
+			// leak presence, and re-asserting it is charged afresh. Expiry
+			// tombstones at the unchanged clock, so a client's own null for an
+			// expired ID is exactly that case.
+			if !honoured && v.live {
+				continue
+			}
 			if owned {
 				undo.record(e.clientID, true)
 				delete(p.clientIDs, e.clientID)
 			}
+		case !honoured:
+			continue
 		case owned || v.live:
 			// Re-asserting a client the peer already speaks for, or one the room
 			// already holds, introduces nothing.
@@ -636,7 +640,9 @@ func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
 		// Later entries see what this one leaves behind, so a frame cannot
 		// retire an ID and then re-assert it for free, nor retire one it has
 		// just asserted at a newer clock.
-		view[e.clientID] = roomView{known: true, clock: e.clock, live: !e.removal}
+		if honoured {
+			view[e.clientID] = roomView{known: true, clock: e.clock, live: !e.removal}
+		}
 	}
 	return true
 }

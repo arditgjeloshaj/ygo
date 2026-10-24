@@ -331,6 +331,29 @@ func TestConnAwarenessCap_EqualClockRemovalFreesASlot(t *testing.T) {
 	require.False(t, roomAwarenessIDs(t, s, "room")[idA], "removed client is still live")
 }
 
+// A client the room expired is already a tombstone at its own clock, so the
+// null its connection sends is one the applier discards. The slot is released
+// all the same: a connection whose awareness identity churns must not wedge.
+func TestConnAwarenessCap_ExpiredClientFreesItsSlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB = 101, 102
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 3)))
+	waitForLiveID(t, s, idA)
+
+	// Expiry tombstones at the unchanged clock, exactly as the sweeper does.
+	rm, _, err := s.getOrCreateRoom(context.Background(), "room")
+	require.NoError(t, err)
+	rm.awareness.RemoveExpired(0)
+	require.False(t, roomAwarenessIDs(t, s, "room")[idA])
+
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 3)))
+	sendAwFrame(t, conn, awFrame(liveEntry(idB, 1)))
+
+	waitForLiveID(t, s, idB)
+}
+
 // The room's own awareness client (ID 0) cannot be retired from the wire: the
 // applier protects its local state instead of removing it, so the gate frees no
 // slot for that null either.

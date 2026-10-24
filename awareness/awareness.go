@@ -373,13 +373,15 @@ func (a *Awareness) GetStates() map[uint64]ClientState {
 	return out
 }
 
-// HasLiveState reports whether clientID currently holds active state, as
-// opposed to being unknown or a removal tombstone.
-func (a *Awareness) HasLiveState(clientID uint64) bool {
+// ClientView reports what awareness currently holds for clientID: its clock,
+// whether it is known at all (a removal tombstone counts), and whether its
+// state is live. The three are read under one lock, so they agree with each
+// other.
+func (a *Awareness) ClientView(clientID uint64) (clock uint64, known, live bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	cs, ok := a.states[clientID]
-	return ok && cs.State != nil
+	return cs.Clock, ok, ok && cs.State != nil
 }
 
 // Meta returns the clock and last-updated time for a known client, including
