@@ -84,8 +84,9 @@ func TestForeignAwareness_HonouredWithUnlimitedRoomCap(t *testing.T) {
 	require.Len(t, roomAwarenessIDs(t, s, "room"), 4)
 }
 
-// A sub-cap above the room cap is clamped to it.
-func TestForeignAwareness_ClampedToRoomCap(t *testing.T) {
+// A sub-cap above the room cap never admits more than the room cap. The room-cap
+// gate is independently at least as strict, so this does not isolate the clamp.
+func TestForeignAwareness_SubCapAboveRoomCapAdmitsNoMoreThanRoomCap(t *testing.T) {
 	s := newForeignAwarenessServer(t, 4, 100)
 	injectForeignPresence(t, s, "room", 20)
 	require.Len(t, roomAwarenessIDs(t, s, "room"), 4)

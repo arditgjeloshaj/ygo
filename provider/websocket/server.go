@@ -1245,9 +1245,11 @@ type Server struct {
 	// MaxForeignAwarenessClients caps the live awareness entries admitted into
 	// one room from presence injected over the cluster relay, so a presence
 	// flood on one node cannot take the room budget from clients connected to
-	// this one. It does not apply to presence from local peers. Zero (the
-	// default) disables the sub-cap and relayed presence shares the whole room
-	// budget. A value above a non-zero MaxAwarenessClientsPerRoom is clamped to
+	// this one. It is a threshold on all live entries in the room, local and
+	// relayed alike: relayed presence is refused once the room holds this many,
+	// while local presence is admitted up to MaxAwarenessClientsPerRoom. Zero
+	// (the default) disables the sub-cap and relayed presence shares the whole
+	// room budget. A value above a non-zero MaxAwarenessClientsPerRoom is clamped to
 	// it, and the sub-cap is honoured when that room cap is unlimited. In an
 	// N-node cluster legitimate foreign presence is about (N-1)/N of a room, so
 	// size this as a large fraction of MaxAwarenessClientsPerRoom, not a
