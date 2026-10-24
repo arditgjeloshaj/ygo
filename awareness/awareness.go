@@ -653,7 +653,9 @@ func (a *Awareness) applyUpdate(update []byte, origin any, foreign bool) error {
 				continue
 			}
 		}
-		if !exists && foreign && a.maxForeignClients > 0 {
+		// Gate on "not currently live", not "never seen", so a tombstone cannot
+		// be revived past the cap. The local client is exempt.
+		if foreign && a.maxForeignClients > 0 && (!exists || current.State == nil) && e.clientID != a.clientID {
 			live := len(a.meta)
 			if _, hasLocal := a.meta[a.clientID]; hasLocal {
 				live--
