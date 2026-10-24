@@ -463,9 +463,11 @@ func (p *peer) sendCloseFrame() {
 }
 
 // awarenessEntry is one decoded entry of an awareness frame: the client it
-// speaks for, and whether it retires that client rather than asserting state.
+// speaks for, the clock it speaks at, and whether it retires that client
+// rather than asserting state.
 type awarenessEntry struct {
 	clientID uint64
+	clock    uint64
 	removal  bool
 }
 
@@ -486,7 +488,8 @@ func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, ok bool) 
 		if err != nil {
 			return entries, false
 		}
-		if _, err = dec.ReadVarUint(); err != nil { // clock
+		clock, err := dec.ReadVarUint()
+		if err != nil {
 			return entries, false
 		}
 		state, err := dec.ReadVarBytes()
@@ -495,6 +498,7 @@ func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, ok bool) 
 		}
 		entries = append(entries, awarenessEntry{
 			clientID: clientID,
+			clock:    clock,
 			removal:  len(state) == 0 || string(state) == "null",
 		})
 	}
@@ -554,37 +558,72 @@ func (u ownershipUndo) restore(set map[uint64]struct{}) {
 	}
 }
 
+// roomView is what the room shows for one client ID, advanced entry by entry
+// as the walk models what the frame will do to it.
+type roomView struct {
+	known bool
+	clock uint64
+	live  bool
+}
+
+// honours reports whether Awareness.applyUpdate will take this entry, mirroring
+// its clock gate: a strictly-older entry is discarded, and one at the same
+// clock counts only when it retires a live client. A null for the awareness's
+// own client is never honoured — the applier protects its local state instead
+// of removing it.
+func (v roomView) honours(e awarenessEntry, localID uint64) bool {
+	if e.removal && e.clientID == localID {
+		return false
+	}
+	if !v.known || e.clock > v.clock {
+		return true
+	}
+	return e.clock == v.clock && e.removal && v.live
+}
+
 // admitAwarenessEntries applies a decoded frame to this peer's owned-ID set and
 // reports whether the frame fits its budget. The whole frame is judged before
 // the verdict, so a removal early in it frees a slot for an introduction later
 // in it, and a rejected frame leaves the set as it found it.
 //
-// Room liveness is resolved before cidMu is taken: HasLiveState takes the
+// An entry the applier will discard changes neither the room nor the budget,
+// so the walk skips it. That matters for removals above all: a slot freed for
+// a null the applier throws away would leave the ID live in the room and owned
+// by nobody, which is the whole cap bypassed one stale null at a time.
+//
+// The room is read before cidMu is taken: Meta and HasLiveState take the
 // awareness lock, and the two must never nest.
 func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
-	live := make(map[uint64]bool, len(entries))
+	localID := p.room.awareness.ClientID()
+	view := make(map[uint64]roomView, len(entries))
 	for _, e := range entries {
-		if _, done := live[e.clientID]; e.removal || done {
+		if _, done := view[e.clientID]; done {
 			continue
 		}
-		live[e.clientID] = p.room.awareness.HasLiveState(e.clientID)
+		m, known := p.room.awareness.Meta(e.clientID)
+		view[e.clientID] = roomView{
+			known: known,
+			clock: m.Clock,
+			live:  p.room.awareness.HasLiveState(e.clientID),
+		}
 	}
 
 	p.cidMu.Lock()
 	defer p.cidMu.Unlock()
 	var undo ownershipUndo
 	for _, e := range entries {
+		v := view[e.clientID]
+		if !v.honours(e, localID) {
+			continue
+		}
 		_, owned := p.clientIDs[e.clientID]
 		switch {
 		case e.removal:
-			// The frame retires the ID, so the room's liveness no longer covers a
-			// re-assertion later in the same frame: that is a fresh introduction.
-			live[e.clientID] = false
 			if owned {
 				undo.record(e.clientID, true)
 				delete(p.clientIDs, e.clientID)
 			}
-		case owned || live[e.clientID]:
+		case owned || v.live:
 			// Re-asserting a client the peer already speaks for, or one the room
 			// already holds, introduces nothing.
 		case len(p.clientIDs) >= limit:
@@ -594,6 +633,10 @@ func (p *peer) admitAwarenessEntries(entries []awarenessEntry, limit int) bool {
 			undo.record(e.clientID, false)
 			p.clientIDs[e.clientID] = struct{}{}
 		}
+		// Later entries see what this one leaves behind, so a frame cannot
+		// retire an ID and then re-assert it for free, nor retire one it has
+		// just asserted at a newer clock.
+		view[e.clientID] = roomView{known: true, clock: e.clock, live: !e.removal}
 	}
 	return true
 }

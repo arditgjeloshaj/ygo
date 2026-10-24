@@ -261,6 +261,95 @@ func TestConnAwarenessCap_ReintroductionInOneFrameCountsAgain(t *testing.T) {
 	require.False(t, roomAwarenessIDs(t, s, "room")[idB], "cap was not spent by the re-introduction")
 }
 
+// A null at a stale clock is discarded by the applier, so it frees no slot: the
+// client it names is still live and still this connection's to answer for.
+func TestConnAwarenessCap_StaleRemovalDoesNotFreeASlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB = 101, 102
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 5)))
+	waitForLiveID(t, s, idA)
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 1)))
+	sendAwFrame(t, conn, awFrame(liveEntry(idB, 1)))
+
+	waitProcessed(t, s, conn, idA, 9)
+	ids := roomAwarenessIDs(t, s, "room")
+	require.True(t, ids[idA], "the stale removal took effect after all")
+	require.False(t, ids[idB], "a discarded removal freed a slot")
+}
+
+// The same shape within one frame: the null is stale against the clock the
+// frame itself just asserted, so the introduction after it has no slot and the
+// whole frame is refused.
+func TestConnAwarenessCap_StaleRemovalInOneFrameDoesNotFreeASlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB, idC = 101, 102, 103
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 10), nullEntry(idA, 7), liveEntry(idB, 1)))
+
+	sendAwFrame(t, conn, awFrame(liveEntry(idC, 1)))
+	waitForLiveID(t, s, idC)
+
+	ids := roomAwarenessIDs(t, s, "room")
+	require.False(t, ids[idA], "rejected frame reached the room")
+	require.False(t, ids[idB], "rejected frame reached the room")
+}
+
+// A removal the applier honours still frees the slot, even after a stale one
+// did not.
+func TestConnAwarenessCap_HonouredRemovalStillFreesASlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB = 101, 102
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 5)))
+	waitForLiveID(t, s, idA)
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 1)))
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 6)))
+	sendAwFrame(t, conn, awFrame(liveEntry(idB, 1)))
+
+	waitForLiveID(t, s, idB)
+	require.False(t, roomAwarenessIDs(t, s, "room")[idA], "removed client is still live")
+}
+
+// ygo's own disconnect removals leave the clock unbumped, and the applier
+// honours a null at the current clock when the client is live. The gate must
+// agree, or a y-protocols client's removals would never free its slots.
+func TestConnAwarenessCap_EqualClockRemovalFreesASlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const idA, idB = 101, 102
+	sendAwFrame(t, conn, awFrame(liveEntry(idA, 5)))
+	waitForLiveID(t, s, idA)
+	sendAwFrame(t, conn, awFrame(nullEntry(idA, 5)))
+	sendAwFrame(t, conn, awFrame(liveEntry(idB, 1)))
+
+	waitForLiveID(t, s, idB)
+	require.False(t, roomAwarenessIDs(t, s, "room")[idA], "removed client is still live")
+}
+
+// The room's own awareness client (ID 0) cannot be retired from the wire: the
+// applier protects its local state instead of removing it, so the gate frees no
+// slot for that null either.
+func TestConnAwarenessCap_RemovalOfTheRoomsOwnClientFreesNoSlot(t *testing.T) {
+	s, ts := newConnCapServer(t, 1)
+	conn := dialRoomInternal(t, ts, "room")
+
+	const localID, idB = 0, 102
+	sendAwFrame(t, conn, awFrame(liveEntry(localID, 1)))
+	waitForLiveID(t, s, localID)
+	sendAwFrame(t, conn, awFrame(nullEntry(localID, 2)))
+	sendAwFrame(t, conn, awFrame(liveEntry(idB, 1)))
+
+	waitProcessed(t, s, conn, localID, 9)
+	ids := roomAwarenessIDs(t, s, "room")
+	require.True(t, ids[localID], "the room's own client was removed from the wire")
+	require.False(t, ids[idB], "a null the applier ignores freed a slot")
+}
+
 // A rejected frame leaves the budget exactly as it found it, however it shuffled
 // ownership before hitting the cap.
 func TestConnAwarenessCap_RejectedFrameLeavesNoResidue(t *testing.T) {
