@@ -155,6 +155,9 @@ type Awareness struct {
 	activeBytes int64 // sum of wireBytes values
 	maxBytes    int64 // 0 = unlimited (default; backward compatible)
 	maxClients  int   // 0 = unlimited (default; backward compatible)
+	// maxForeignClients bounds live entries admitted via ApplyUpdateForeign;
+	// 0 = no sub-cap.
+	maxForeignClients int
 	// removedAt records when each REMOTE client became a null-state tombstone,
 	// so PurgeTombstones can reclaim ones older than a grace period. The local
 	// client is never tracked here (its "leaving" tombstone must persist). An
@@ -211,6 +214,23 @@ func (a *Awareness) SetMaxBytes(n int64) {
 func (a *Awareness) SetMaxClients(n int) {
 	a.mu.Lock()
 	a.maxClients = n
+	a.mu.Unlock()
+}
+
+// SetMaxForeignClients bounds the live remote entries that ApplyUpdateForeign
+// will admit, so relayed presence cannot crowd out local clients under
+// SetMaxClients. Once reached, ApplyUpdateForeign refuses previously-unseen
+// client IDs; tracked clients still update and can be removed. It does not
+// restrict ApplyUpdate.
+//
+// Unlike SetMaxClients it counts live entries only, not removal tombstones:
+// tombstones are reclaimed only while StartAutoExpiry runs, so counting them
+// would let ordinary churn saturate the sub-cap permanently.
+//
+// A value of 0 (the default) disables the sub-cap.
+func (a *Awareness) SetMaxForeignClients(n int) {
+	a.mu.Lock()
+	a.maxForeignClients = n
 	a.mu.Unlock()
 }
 
@@ -520,6 +540,17 @@ func (a *Awareness) EncodeUpdate(clientIDs []uint64) []byte {
 // Returns ErrTooManyClients if the update claims more than maxAwarenessClients
 // entries, or ErrStateTooLarge if any single state JSON exceeds maxAwarenessStateBytes.
 func (a *Awareness) ApplyUpdate(update []byte, origin any) error {
+	return a.applyUpdate(update, origin, false)
+}
+
+// ApplyUpdateForeign is ApplyUpdate for presence relayed from another node.
+// Entries that would push the live remote count past SetMaxForeignClients are
+// skipped without error; it is otherwise identical to ApplyUpdate.
+func (a *Awareness) ApplyUpdateForeign(update []byte, origin any) error {
+	return a.applyUpdate(update, origin, true)
+}
+
+func (a *Awareness) applyUpdate(update []byte, origin any, foreign bool) error {
 	dec := encoding.NewDecoder(update)
 
 	numClients, err := dec.ReadVarUint()
@@ -619,6 +650,15 @@ func (a *Awareness) ApplyUpdate(update []byte, origin any) error {
 				remote-- // exclude the exempt local entry from the cap
 			}
 			if remote >= a.maxClients {
+				continue
+			}
+		}
+		if !exists && foreign && a.maxForeignClients > 0 {
+			live := len(a.meta)
+			if _, hasLocal := a.meta[a.clientID]; hasLocal {
+				live--
+			}
+			if live >= a.maxForeignClients {
 				continue
 			}
 		}
