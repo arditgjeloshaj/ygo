@@ -1283,8 +1283,8 @@ type Server struct {
 	MaxForeignAwarenessClients int
 
 	// MaxAwarenessClientsPerConn caps how many awareness client IDs one
-	// connection may introduce to its room, containing a presence flood at the
-	// connection that sends it. A frame that would exceed the cap is rejected
+	// connection may hold live in its room at once, containing a flood of
+	// live presence at the connection that sends it. A frame that would exceed the cap is rejected
 	// whole: it is neither applied nor relayed. Zero (the default) selects the
 	// built-in default of 64; a negative value disables the gate and restores
 	// the previous behaviour, including the 10,000-ID tracking ceiling that
@@ -1295,7 +1295,13 @@ type Server struct {
 	// Only IDs this connection introduced and that are still live count, so a
 	// y-protocols timeout-removal broadcast (all nulls) and a full-state echo
 	// (IDs the room already holds) are both free, while reviving an ID the
-	// connection removed spends a slot again. A connection speaking for one
+	// connection removed spends a slot again. Because a removal frees the slot,
+	// this bounds concurrent presence rather than how many IDs a connection
+	// creates over its lifetime: a connection that introduces and retires IDs
+	// in turn leaves a tombstone behind each time. Tombstone accumulation is
+	// bounded by MaxAwarenessClientsPerRoom, which counts them, and reclaimed
+	// by AwarenessExpiry; set both if untrusted peers can reach this server.
+	// A connection speaking for one
 	// browser tab needs a single ID; a trusted bridge fanning many users
 	// through one socket needs as many as it carries. The escape hatch is
 	// server-wide, so an operator running such a bridge alongside untrusted

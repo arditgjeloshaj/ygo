@@ -497,7 +497,10 @@ func decodeAwarenessEntries(payload []byte) (entries []awarenessEntry, err error
 	if n > maxAwarenessEntriesPerFrame {
 		return nil, errAwarenessTooManyClient
 	}
-	entries = make([]awarenessEntry, 0, n)
+	// n is peer-supplied; each entry needs at least three bytes on the wire,
+	// so the payload bounds the real count and a tiny frame claiming 100,000
+	// entries cannot force the allocation.
+	entries = make([]awarenessEntry, 0, min(n, uint64(len(payload)/3)))
 	for i := uint64(0); i < n; i++ {
 		clientID, err := dec.ReadVarUint()
 		if err != nil {

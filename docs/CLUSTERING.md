@@ -133,9 +133,9 @@ A client can claim any awareness client ID, and the relay hands every node that
 holds the room each ID the others admit, so two bounds apply, at two points.
 
 **Per connection (on by default).** `Server.MaxAwarenessClientsPerConn` caps how
-many awareness client IDs one websocket connection may introduce to its room,
-so a flood is stopped at the connection that sends it and never reaches the
-room or the relay. A frame that would exceed the cap is dropped whole (debug
+many awareness client IDs one websocket connection may hold live in its room
+at once, so a flood of live presence is stopped at the connection that sends
+it and never reaches the room or the relay. A frame that would exceed the cap is dropped whole (debug
 logged), not applied and not broadcast. This protects single-node deployments
 too.
 
@@ -148,6 +148,13 @@ too.
   timeout-removal broadcasts y-protocols clients send (nulls that name other
   clients' IDs) and full-state echoes (IDs the room already holds live) cost
   nothing, so the cap is not a limit on room size: a room of any size works.
+- The cap bounds concurrent presence, not how many IDs a connection creates
+  over its lifetime. A removal frees the slot immediately — it has to, or a
+  long-lived connection whose clients come and go would wedge — so a
+  connection that introduces and retires IDs in turn leaves a tombstone
+  behind each time. Tombstones are what `MaxAwarenessClientsPerRoom` counts
+  and what `AwarenessExpiry` reclaims; set both if untrusted peers can reach
+  this server, since neither is on by default.
 - The escape hatch is server-wide. An embedder that bridges many clients over
   one connection must raise the cap or disable it for every connection; there
   is no per-connection override.

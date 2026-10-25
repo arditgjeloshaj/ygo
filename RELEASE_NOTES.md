@@ -19,7 +19,16 @@ that are not live in the room count against it, and an ID stops counting once
 the connection removes it (or disconnects). A browser tab introduces one. The
 timeout-removal broadcasts y-protocols clients send, which name other clients'
 IDs as nulls, and the full-state echoes they send, which re-assert IDs the room
-already holds, cost nothing. An embedder that fans many users through one
+already holds, cost nothing.
+
+Because a removal frees the slot, the cap bounds concurrent presence rather
+than how many IDs a connection creates over its lifetime: a connection that
+introduces and retires IDs in turn leaves a tombstone behind each time.
+Tombstones are what `MaxAwarenessClientsPerRoom` counts and what
+`AwarenessExpiry` reclaims, and neither is on by default — set both if
+untrusted peers can reach the server.
+
+An embedder that fans many users through one
 connection introduces as many IDs as it carries, so it must raise the cap or
 disable it. The setting is server-wide: there is no per-connection override, so
 a trusted bridge beside untrusted browsers raises it for all of them.

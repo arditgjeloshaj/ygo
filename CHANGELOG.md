@@ -18,9 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection introduces that are not live in the room count, and an ID stops
   counting once the connection removes it (or disconnects), so a y-protocols
   timeout-removal broadcast and a full-state echo cost nothing and a room of
-  any size is unaffected. `0` (the default) selects 64, a negative value
-  disables the gate, and a positive value is used as given. This inverts the
-  `0 = unlimited` convention of the neighbouring `Max*` fields. The cap is
+  any size is unaffected. Because a removal frees the slot, this bounds
+  concurrent presence rather than lifetime ID creation: introduce-then-retire
+  churn leaves a tombstone each time, which `MaxAwarenessClientsPerRoom`
+  counts and `AwarenessExpiry` reclaims. `0` (the default) selects 64, a
+  negative value disables the gate, and a positive value is used as given.
+  This inverts the `0 = unlimited` convention of the neighbouring `Max*`
+  fields. The cap is
   server-wide; there is no per-connection override. Disconnect behaviour
   narrows with it: a connection's departure now removes the IDs it introduced
   and still holds, not every ID it ever named in a frame.
