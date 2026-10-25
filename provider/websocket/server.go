@@ -1283,9 +1283,9 @@ type Server struct {
 	MaxForeignAwarenessClients int
 
 	// MaxAwarenessClientsPerConn caps how many awareness client IDs one
-	// connection may hold live in its room at once, containing a flood of
-	// live presence at the connection that sends it. A frame that would exceed the cap is rejected
-	// whole: it is neither applied nor relayed. Zero (the default) selects the
+	// connection may hold live in its room at once, containing a flood of live
+	// presence at the connection that sends it. A frame that would exceed the
+	// cap is rejected whole: it is neither applied nor relayed. Zero (the default) selects the
 	// built-in default of 64; a negative value disables the gate and restores
 	// the previous behaviour, including the 10,000-ID tracking ceiling that
 	// bounds the disconnect removal slice. Note the inverted convention: unlike
@@ -1301,11 +1301,17 @@ type Server struct {
 	// in turn leaves a tombstone behind each time. Tombstone accumulation is
 	// bounded by MaxAwarenessClientsPerRoom, which counts them, and reclaimed
 	// by AwarenessExpiry; set both if untrusted peers can reach this server.
-	// A connection speaking for one
-	// browser tab needs a single ID; a trusted bridge fanning many users
-	// through one socket needs as many as it carries. The escape hatch is
-	// server-wide, so an operator running such a bridge alongside untrusted
-	// browsers must raise the cap for everyone.
+	// A connection speaking for one browser tab needs a single ID; a trusted
+	// bridge fanning many users through one socket needs as many as it
+	// carries. The escape hatch is server-wide, so an operator running such a
+	// bridge alongside untrusted browsers must raise the cap for everyone.
+	//
+	// A positive value is also the ceiling on the IDs one connection is
+	// tracked as owning, and so on the disconnect removal slice. Setting a
+	// very large number to defeat the gate therefore costs more memory than
+	// turning it off: a negative value disables admission checks while
+	// keeping the 10,000-ID tracking ceiling. Disable with a negative value,
+	// not a huge positive one.
 	//
 	// Disconnect behaviour narrows with the gate on: a connection's departure
 	// removes the IDs it introduced and still holds, not every ID it ever

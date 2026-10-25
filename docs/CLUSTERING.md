@@ -155,6 +155,11 @@ too.
   behind each time. Tombstones are what `MaxAwarenessClientsPerRoom` counts
   and what `AwarenessExpiry` reclaims; set both if untrusted peers can reach
   this server, since neither is on by default.
+- A positive value is also the ceiling on the IDs one connection is tracked
+  as owning, and so on the slice its disconnect builds. Disable the gate
+  with a negative value rather than a very large positive one: a negative
+  value skips the admission checks but keeps the 10,000-ID tracking
+  ceiling, so it costs less memory than a huge cap.
 - The escape hatch is server-wide. An embedder that bridges many clients over
   one connection must raise the cap or disable it for every connection; there
   is no per-connection override.
